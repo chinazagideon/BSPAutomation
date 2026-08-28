@@ -1,0 +1,6 @@
+{
+  "name": "Enterprise WhatsApp Workflow Platform",
+  "description": "Hyper-localized WhatsApp conversational CRM, webhook anti-ghosting engine, atomic reservation holds, and Nigerian Pidgin NLU for SMEs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
