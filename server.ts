@@ -59,45 +59,56 @@ function sanitizeNigerianPii(text: string) {
 
   let sanitized = text;
 
-  // 1. Bank Verification Number (BVN) - 11 digits (frequently starting with 22...)
-  const bvnRegex = /\b(22\d{9}|\d{11})\b/g;
-  // If explicitly mentioned as BVN
-  const explicitBvnRegex = /(?:bvn|verification\s*(?:no|number)|bank\s*id)\s*[:=]?\s*(\d{11})/gi;
-  sanitized = sanitized.replace(explicitBvnRegex, (match, bvn) => {
-    const token = `[REDACTED_BVN_${bvn.slice(-4)}]`;
-    redactedEntities.push({ type: 'BVN', value: bvn, token });
-    return `BVN: ${token}`;
-  });
-
-  // 2. National Identity Number (NIN) - 11 digits
-  const explicitNinRegex = /(?:nin|national\s*id(?:entity)?(?:\s*no|\s*number)?)\s*[:=]?\s*(\d{11})/gi;
-  sanitized = sanitized.replace(explicitNinRegex, (match, nin) => {
-    const token = `[REDACTED_NIN_${nin.slice(-4)}]`;
-    redactedEntities.push({ type: 'NIN', value: nin, token });
-    return `NIN: ${token}`;
-  });
-
-  // 3. NUBAN Bank Account Number - 10 digits
-  const nubanRegex = /(?:account|acct|nuban)\s*(?:no|number)?\s*[:=]?\s*(\d{10})/gi;
-  sanitized = sanitized.replace(nubanRegex, (match, acct) => {
-    const token = `[REDACTED_NUBAN_${acct.slice(-4)}]`;
-    redactedEntities.push({ type: 'NUBAN', value: acct, token });
-    return `Account: ${token}`;
-  });
-
-  // 4. Debit Card PAN (16 digits or 4x4)
+  // 1. Debit Card PAN (16 digits with optional spaces or hyphens)
   const cardRegex = /\b(?:\d{4}[-\s]?){3}\d{4}\b/g;
   sanitized = sanitized.replace(cardRegex, (match) => {
     const clean = match.replace(/[-\s]/g, '');
-    const token = `[REDACTED_CARD_PAN_${clean.slice(-4)}]`;
-    redactedEntities.push({ type: 'CARD_PAN', value: match, token });
-    return token;
+    if (clean.length === 16) {
+      const token = `[REDACTED_CARD_PAN_${clean.slice(-4)}]`;
+      redactedEntities.push({ type: 'CARD_PAN', value: match, token });
+      return token;
+    }
+    return match;
   });
 
-  // 5. Raw standalone 11 digits that might be BVN/NIN
+  // 2. Explicit Bank Verification Number (BVN) - 11 digits
+  // Matches "BVN is 22298765432", "BVN: 22298765432", "my BVN 22298765432", "Bank verification no: 22298765432", etc.
+  const explicitBvnRegex = /\b((?:my\s+)?(?:bvn|bank\s*verification\s*(?:no|number|num)?|verification\s*(?:no|number|num)?|bank\s*id)\s*(?:is|be|dey|:=|:|=|-|#)?\s*)(\d{11})\b/gi;
+  sanitized = sanitized.replace(explicitBvnRegex, (match, prefix, bvn) => {
+    const token = `[REDACTED_BVN_${bvn.slice(-4)}]`;
+    redactedEntities.push({ type: 'BVN', value: bvn, token });
+    return `${prefix}${token}`;
+  });
+
+  // 3. Explicit National Identity Number (NIN) - 11 digits
+  // Matches "NIN is 12345678901", "my NIN is 12345678901", "NIN: 12345678901", "national ID number is 12345678901", "NIMC NIN 12345678901", "national identity: 12345678901", etc.
+  const explicitNinRegex = /\b((?:my\s+)?(?:nin|nimc(?:\s*nin)?|national\s*(?:id(?:entity)?(?:\s*(?:no|number|num))?|identification\s*(?:no|number|num)?))\s*(?:is|be|dey|:=|:|=|-|#)?\s*)(\d{11})\b/gi;
+  sanitized = sanitized.replace(explicitNinRegex, (match, prefix, nin) => {
+    const token = `[REDACTED_NIN_${nin.slice(-4)}]`;
+    redactedEntities.push({ type: 'NIN', value: nin, token });
+    return `${prefix}${token}`;
+  });
+
+  // 4. Explicit NUBAN Bank Account Number - 10 digits
+  // Matches "Account: 0123456789", "my account is 0123456789", "acct no: 0123456789", "nuban is 0123456789", "send payment to my Account: 0123456789"
+  const explicitNubanRegex = /\b((?:my\s+)?(?:account|acct|nuban|bank\s*account|account\s*(?:no|number|num)?|acct\s*(?:no|number|num)?)\s*(?:is|be|dey|:=|:|=|-|#)?\s*)(\d{10})\b/gi;
+  sanitized = sanitized.replace(explicitNubanRegex, (match, prefix, acct) => {
+    const token = `[REDACTED_NUBAN_${acct.slice(-4)}]`;
+    redactedEntities.push({ type: 'NUBAN', value: acct, token });
+    return `${prefix}${token}`;
+  });
+
+  // 5. Implicit / Standalone 11-digit BVNs starting with 22 (standard Nigerian BVN prefix)
   sanitized = sanitized.replace(/\b(22\d{9})\b/g, (match) => {
     const token = `[REDACTED_BVN_${match.slice(-4)}]`;
     redactedEntities.push({ type: 'BVN', value: match, token });
+    return token;
+  });
+
+  // 6. Generic Standalone 11 digits (excluding local mobile phone prefixes starting with 0)
+  sanitized = sanitized.replace(/\b([1-9]\d{10})\b/g, (match) => {
+    const token = `[REDACTED_NIN_${match.slice(-4)}]`;
+    redactedEntities.push({ type: 'NIN', value: match, token });
     return token;
   });
 
