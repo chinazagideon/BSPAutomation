@@ -52,3 +52,19 @@ _Avoid_: Free tier tokens, trial credits
 A PostgreSQL `pg_trgm` GIN index matching Nigerian Pidgin phrases and commercial catalog items with typo tolerance and sub-millisecond execution.
 _Avoid_: Fuzzy search, text query
 
+**Cascading Hybrid NLU Pipeline**:
+A 3-stage hierarchical classification architecture that routes inbound messages sequentially through Trigram Fast-Path (Stage 1), Custom Local Classifier (Stage 2), and Gemini LLM Escalation (Stage 3) based on confidence thresholds and stage state controllers.
+_Avoid_: Multi-model ensemble, fallback chain
+
+**Custom Local Classifier**:
+An in-process machine learning model (e.g. HuggingFace transformer / ONNX Runtime) trained specifically on localized Nigerian commercial dialogues and Pidgin dialect nuances, providing zero-token intent and dialect classification.
+_Avoid_: Local LLM, offline model
+
+**Confidence Escalation Gate**:
+A configurable threshold-based decision barrier that evaluates whether a stage's classification confidence meets acceptance criteria before either terminating execution or escalating to the next stage.
+_Avoid_: Score check, confidence router
+
+**NLU Stage State Controller**:
+An environment-driven and tenant-configurable toggle matrix (`USE_FAST_PATH`, `USE_CUSTOM_MODEL`, `USE_LLM_ESCALATION`) that deterministically enables or bypasses specific stages in the cascading pipeline.
+_Avoid_: Feature flag, model switch
+
