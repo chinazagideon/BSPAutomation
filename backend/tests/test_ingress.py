@@ -32,7 +32,10 @@ async def test_ingress_classify_endpoint(async_client: AsyncClient, default_merc
         headers=default_merchant_headers,
     )
     assert response.status_code == 200
-    data = response.json()
-    assert data["routing_source"] in ["FAST_PATH", "CUSTOM_LOCAL_MODEL"]
-    assert data["lead_tier"] == "HOT"
-    assert "extracted_entities" in data
+    resp_body = response.json()
+    assert resp_body["success"] is True
+    data = resp_body["data"]
+    assert data["routingSource"] in ["FAST_PATH", "CUSTOM_LOCAL_MODEL"]
+    assert data["leadTier"] == "HOT"
+    assert "extractedEntities" in data
+

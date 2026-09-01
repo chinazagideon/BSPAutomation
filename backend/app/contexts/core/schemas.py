@@ -3,13 +3,15 @@
 from typing import Optional, List, Literal
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import EmailStr, Field
+
+from app.core.response import CamelModel
 
 
 # -----------------------------------------------------------------------------
 # 1. MERCHANT TENANT SCHEMAS
 # -----------------------------------------------------------------------------
-class MerchantBase(BaseModel):
+class MerchantBase(CamelModel):
     business_name: str = Field(..., max_length=256)
     slug: str = Field(..., max_length=128)
     bsp_provider: str = Field("META_CLOUD", max_length=32)
@@ -30,20 +32,18 @@ class MerchantRead(MerchantBase):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
-
 
 # -----------------------------------------------------------------------------
 # 2. USER & TEAM PROVISIONING SCHEMAS
 # -----------------------------------------------------------------------------
-class UserCreate(BaseModel):
+class UserCreate(CamelModel):
     email: EmailStr
     password: str = Field(..., min_length=8, description="Minimum 8 characters")
     full_name: str = Field(..., max_length=256)
     role: Literal["ADMIN", "MANAGER", "AGENT", "READ_ONLY"] = "AGENT"
 
 
-class UserRead(BaseModel):
+class UserRead(CamelModel):
     id: UUID
     merchant_id: UUID
     email: EmailStr
@@ -53,13 +53,11 @@ class UserRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
-
 
 # -----------------------------------------------------------------------------
 # 3. ONBOARDING & AUTHENTICATION SCHEMAS
 # -----------------------------------------------------------------------------
-class MerchantRegisterRequest(BaseModel):
+class MerchantRegisterRequest(CamelModel):
     """Atomic self-serve registration payload for Nigerian SME merchants."""
     business_name: str = Field(..., max_length=256)
     slug: str = Field(..., max_length=128)
@@ -76,16 +74,16 @@ class MerchantRegisterRequest(BaseModel):
     owner_full_name: str = Field(..., max_length=256)
 
 
-class UserLogin(BaseModel):
+class UserLogin(CamelModel):
     email: EmailStr
     password: str
 
 
-class TokenRefreshRequest(BaseModel):
+class TokenRefreshRequest(CamelModel):
     refresh_token: str
 
 
-class TokenResponse(BaseModel):
+class TokenResponse(CamelModel):
     access_token: str
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
@@ -96,7 +94,7 @@ class TokenResponse(BaseModel):
     full_name: str
 
 
-class UserProfileResponse(BaseModel):
+class UserProfileResponse(CamelModel):
     user: UserRead
     merchant: MerchantRead
     role_rank: int
@@ -106,10 +104,11 @@ class UserProfileResponse(BaseModel):
 # -----------------------------------------------------------------------------
 # 4. RFC 7807 PROBLEM DETAILS SCHEMA
 # -----------------------------------------------------------------------------
-class RFC7807ProblemDetails(BaseModel):
+class RFC7807ProblemDetails(CamelModel):
     type: str
     title: str
     status: int
     detail: str
     instance: Optional[str] = None
     trace_id: Optional[str] = None
+

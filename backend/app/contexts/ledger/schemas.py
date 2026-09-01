@@ -3,24 +3,26 @@
 from typing import Optional, List, Literal
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from app.core.response import CamelModel
 
 
-class CartItemInput(BaseModel):
+class CartItemInput(CamelModel):
     item_sku: str
     item_title: str
     unit_price_kobo: int = Field(..., gt=0)
     quantity: int = Field(1, ge=1)
 
 
-class CartCreateRequest(BaseModel):
+class CartCreateRequest(CamelModel):
     customer_phone: str = "+2348031234567"
     conversation_id: Optional[UUID] = None
     items: List[CartItemInput]
     hold_minutes: int = Field(10, ge=1, le=60)
 
 
-class VirtualNubanRead(BaseModel):
+class VirtualNubanRead(CamelModel):
     bank_name: str
     bank_code: str
     account_number: str
@@ -29,10 +31,8 @@ class VirtualNubanRead(BaseModel):
     amount_naira: float
     expires_in_seconds: int
 
-    model_config = {"from_attributes": True}
 
-
-class CartResponse(BaseModel):
+class CartResponse(CamelModel):
     id: UUID
     customer_phone: str
     total_amount_kobo: int
@@ -42,7 +42,7 @@ class CartResponse(BaseModel):
     virtual_nuban: Optional[VirtualNubanRead] = None
 
 
-class LedgerValidationRequest(BaseModel):
+class LedgerValidationRequest(CamelModel):
     assets: float = 150000.0
     liabilities: float = 50000.0
     equity: float = 100000.0
@@ -51,7 +51,7 @@ class LedgerValidationRequest(BaseModel):
     expected_amount: float = 45000.0
 
 
-class LedgerValidationResponse(BaseModel):
+class LedgerValidationResponse(CamelModel):
     transaction_ref: str
     assets: float
     liabilities: float
@@ -62,3 +62,4 @@ class LedgerValidationResponse(BaseModel):
     status: Literal["SETTLED_BALANCED", "MISMATCH_ALERT"]
     ai_explanation: Optional[str] = None
     accounting_equation: str
+

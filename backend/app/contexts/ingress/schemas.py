@@ -3,10 +3,12 @@
 from typing import Optional, Dict, Any, List, Literal
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from app.core.response import CamelModel
 
 
-class WebhookMessageItem(BaseModel):
+class WebhookMessageItem(CamelModel):
     id: str
     from_phone: str = Field(..., alias="from")
     text: Optional[Dict[str, str]] = None
@@ -14,19 +16,19 @@ class WebhookMessageItem(BaseModel):
     timestamp: str
 
 
-class WebhookPayload(BaseModel):
+class WebhookPayload(CamelModel):
     object: str = "whatsapp_business_account"
     entry: List[Dict[str, Any]] = Field(default_factory=list)
 
 
-class NLUClassificationRequest(BaseModel):
+class NLUClassificationRequest(CamelModel):
     message: str = Field(..., min_length=1)
     customer_phone: str = "+2348031234567"
     customer_name: Optional[str] = "Tunde Adeleke"
     previous_context: List[str] = Field(default_factory=list)
 
 
-class NLUClassificationResponse(BaseModel):
+class NLUClassificationResponse(CamelModel):
     routing_source: Literal["FAST_PATH", "CUSTOM_LOCAL_MODEL", "GEMINI_LLM_ESCALATION", "FALLBACK_DESK_HANDOFF"]
     intent: str
     lead_tier: Literal["HOT", "WARM", "COLD"]
@@ -41,7 +43,7 @@ class NLUClassificationResponse(BaseModel):
     estimated_kobo_saved: int = 0
 
 
-class AIWalletRead(BaseModel):
+class AIWalletRead(CamelModel):
     merchant_id: UUID
     balance_kobo: int
     balance_naira: float
@@ -50,4 +52,3 @@ class AIWalletRead(BaseModel):
     total_naira_saved: float
     is_active: bool
 
-    model_config = {"from_attributes": True}

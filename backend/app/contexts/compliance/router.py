@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenant import get_tenant_db, get_current_tenant, TenantContext
+from app.core.response import ApiResponse
 from app.contexts.compliance.schemas import (
     PiiSanitizeRequest,
     PiiSanitizeResponse,
@@ -16,15 +17,16 @@ from app.contexts.compliance.services import ComplianceService
 router = APIRouter(prefix="/compliance", tags=["Compliance & NDPA Consent"])
 
 
-@router.post("/sanitize", response_model=PiiSanitizeResponse)
+@router.post("/sanitize", response_model=ApiResponse[PiiSanitizeResponse])
 async def sanitize_pii_payload(payload: PiiSanitizeRequest):
     """
     Sanitizes and masks Nigerian BVN, NIN, NUBAN, and Card PAN identifiers before external routing.
     """
-    return ComplianceService.sanitize_text(payload)
+    result = ComplianceService.sanitize_text(payload)
+    return ApiResponse.create(data=result)
 
 
-@router.post("/consent", response_model=ConsentEventRead, status_code=status.HTTP_201_CREATED)
+@router.post("/consent", response_model=ApiResponse[ConsentEventRead], status_code=status.HTTP_201_CREATED)
 async def record_consent_event(
     payload: ConsentLogRequest,
     tenant: TenantContext = Depends(get_current_tenant),
@@ -34,8 +36,10 @@ async def record_consent_event(
     Appends an NDPA 2023 consent action (OPT_IN, OPT_OUT_STOP, OPT_OUT_COMOT)
     to the immutable SHA-256 cryptographically chained consent ledger.
     """
-    return await ComplianceService.log_chained_consent_event(
+    result = await ComplianceService.log_chained_consent_event(
         session=db,
         merchant_id=UUID(tenant.merchant_id),
         request=payload,
     )
+    return ApiResponse.create(data=result)
+

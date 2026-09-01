@@ -14,6 +14,7 @@ from app.core.tenant import (
     ROLE_RANKS,
 )
 from app.core.security import set_auth_cookies, clear_auth_cookies
+from app.core.response import ApiResponse, ApiListResponse
 from app.contexts.core.schemas import (
     MerchantCreate,
     MerchantRead,
@@ -35,7 +36,7 @@ router = APIRouter(prefix="/core", tags=["Core Tenant & Authentication"])
 # -----------------------------------------------------------------------------
 @router.post(
     "/auth/register",
-    response_model=TokenResponse,
+    response_model=ApiResponse[TokenResponse],
     status_code=status.HTTP_201_CREATED,
     summary="Register new merchant & initial OWNER user",
 )
@@ -54,12 +55,12 @@ async def register_merchant(
         db, payload
     )
     set_auth_cookies(response, token_response.access_token, raw_refresh_token)
-    return token_response
+    return ApiResponse.create(data=token_response)
 
 
 @router.post(
     "/auth/login",
-    response_model=TokenResponse,
+    response_model=ApiResponse[TokenResponse],
     status_code=status.HTTP_200_OK,
     summary="Authenticate user and issue token pair",
 )
@@ -78,12 +79,12 @@ async def login_user(
         db, payload
     )
     set_auth_cookies(response, token_response.access_token, raw_refresh_token)
-    return token_response
+    return ApiResponse.create(data=token_response)
 
 
 @router.post(
     "/auth/refresh",
-    response_model=TokenResponse,
+    response_model=ApiResponse[TokenResponse],
     status_code=status.HTTP_200_OK,
     summary="Rotate single-use refresh token",
 )
@@ -114,11 +115,12 @@ async def refresh_access_token(
 
     token_response, new_raw_token = await AuthService.rotate_refresh_token(db, raw_token)
     set_auth_cookies(response, token_response.access_token, new_raw_token)
-    return token_response
+    return ApiResponse.create(data=token_response)
 
 
 @router.post(
     "/auth/logout",
+    response_model=ApiResponse[dict],
     status_code=status.HTTP_200_OK,
     summary="Revoke active token family and clear session",
 )
@@ -141,12 +143,12 @@ async def logout_user(
         await AuthService.logout_user(db, user_id=user_id, raw_refresh_token=raw_token)
 
     clear_auth_cookies(response)
-    return {"status": "logged_out", "detail": "Session terminated successfully"}
+    return ApiResponse.create(data={"status": "logged_out", "detail": "Session terminated successfully"})
 
 
 @router.get(
     "/auth/me",
-    response_model=UserProfileResponse,
+    response_model=ApiResponse[UserProfileResponse],
     status_code=status.HTTP_200_OK,
     summary="Get authenticated user and tenant profile",
 )
@@ -170,12 +172,13 @@ async def get_current_user_profile(
     merchant_read = MerchantRead.model_validate(merchant)
     role_rank = ROLE_RANKS.get((user.role or "").upper(), 0)
 
-    return UserProfileResponse(
+    profile = UserProfileResponse(
         user=user_read,
         merchant=merchant_read,
         role_rank=role_rank,
         active_channel=tenant.source,
     )
+    return ApiResponse.create(data=profile)
 
 
 # -----------------------------------------------------------------------------
@@ -183,7 +186,7 @@ async def get_current_user_profile(
 # -----------------------------------------------------------------------------
 @router.post(
     "/auth/users",
-    response_model=UserRead,
+    response_model=ApiResponse[UserRead],
     status_code=status.HTTP_201_CREATED,
     summary="Provision a new team member under active merchant",
 )
@@ -196,14 +199,15 @@ async def create_team_user(
     Provisions a new staff member (MANAGER, AGENT, READ_ONLY) under the active merchant.
     Requires caller to possess at least 'ADMIN' role rank.
     """
-    return await AuthService.create_merchant_user(
+    user = await AuthService.create_merchant_user(
         db, merchant_id=UUID(tenant.merchant_id), data=payload
     )
+    return ApiResponse.create(data=UserRead.model_validate(user))
 
 
 @router.get(
     "/auth/users",
-    response_model=List[UserRead],
+    response_model=ApiListResponse[UserRead],
     status_code=status.HTTP_200_OK,
     summary="List all team members for active merchant",
 )
@@ -213,31 +217,33 @@ async def list_team_users(
 ):
     """Lists all team members under the caller's merchant tenant."""
     users = await AuthService.list_merchant_users(db, merchant_id=UUID(tenant.merchant_id))
-    return [UserRead.model_validate(u) for u in users]
+    return ApiListResponse.create(data=[UserRead.model_validate(u) for u in users])
 
 
 # -----------------------------------------------------------------------------
 # 3. MERCHANT PROFILE MANAGEMENT
 # -----------------------------------------------------------------------------
-@router.post("/merchants", response_model=MerchantRead, status_code=status.HTTP_201_CREATED)
+@router.post("/merchants", response_model=ApiResponse[MerchantRead], status_code=status.HTTP_201_CREATED)
 async def create_merchant(
     payload: MerchantCreate,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Registers a new Nigerian SME tenant on the platform."""
-    return await CoreService.create_merchant(db, payload)
+    merchant = await CoreService.create_merchant(db, payload)
+    return ApiResponse.create(data=MerchantRead.model_validate(merchant))
 
 
-@router.get("/merchants", response_model=List[MerchantRead])
+@router.get("/merchants", response_model=ApiListResponse[MerchantRead])
 async def list_merchants(
     limit: int = 50,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Lists registered merchant profiles."""
-    return await CoreService.list_merchants(db, limit)
+    merchants = await CoreService.list_merchants(db, limit)
+    return ApiListResponse.create(data=[MerchantRead.model_validate(m) for m in merchants])
 
 
-@router.get("/merchants/me", response_model=MerchantRead)
+@router.get("/merchants/me", response_model=ApiResponse[MerchantRead])
 async def get_current_merchant_profile(
     tenant: TenantContext = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db_session),
@@ -246,4 +252,5 @@ async def get_current_merchant_profile(
     merchant = await CoreService.get_merchant_by_id(db, UUID(tenant.merchant_id))
     if not merchant:
         raise HTTPException(status_code=404, detail="Merchant not found")
-    return merchant
+    return ApiResponse.create(data=MerchantRead.model_validate(merchant))
+

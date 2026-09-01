@@ -18,10 +18,13 @@ async def test_generate_six_field_context_card(async_client: AsyncClient):
     }
     response = await async_client.post("/api/v1/desk/context", json=payload)
     assert response.status_code == 200
-    data = response.json()
+    resp_body = response.json()
+    assert resp_body["success"] is True
+    data = resp_body["data"]
     assert data["status"] == "CONTEXT_INJECTED"
     summary = data["summary"]
-    assert "executive_summary" in summary
-    assert "detected_budget_naira" in summary
-    assert "suggested_first_response" in summary
-    assert summary["urgency_tier"] in ["HOT", "WARM"]
+    assert "executiveSummary" in summary
+    assert "detectedBudgetNaira" in summary
+    assert "suggestedFirstResponse" in summary
+    assert summary["urgencyTier"] in ["HOT", "WARM"]
+

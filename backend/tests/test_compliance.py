@@ -12,8 +12,10 @@ async def test_pii_sanitization_masks_bvn_and_card(async_client: AsyncClient):
     }
     response = await async_client.post("/api/v1/compliance/sanitize", json=payload)
     assert response.status_code == 200
-    data = response.json()
-    sanitized = data["sanitized_text"]
+    resp_body = response.json()
+    assert resp_body["success"] is True
+    data = resp_body["data"]
+    sanitized = data["sanitizedText"]
 
     # Assert raw sensitive numbers are NOT present in output
     assert "22298765432" not in sanitized
@@ -24,4 +26,5 @@ async def test_pii_sanitization_masks_bvn_and_card(async_client: AsyncClient):
     assert "[REDACTED_BVN_5432]" in sanitized
     assert "[REDACTED_CARD_PAN_1204]" in sanitized
     assert "[REDACTED_NUBAN_6789]" in sanitized
-    assert len(data["redacted_entities"]) >= 3
+    assert len(data["redactedEntities"]) >= 3
+

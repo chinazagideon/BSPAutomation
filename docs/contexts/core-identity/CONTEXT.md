@@ -51,3 +51,24 @@ _Avoid_: Refresh buffer, token delay, leeway window
 **Account Lockout Governor**:
 A defensive authentication policy that temporarily suspends credential evaluation for a user account after repeated consecutive failed login attempts.
 _Avoid_: Password blocker, user freeze, lockout timer
+
+**Unified Response Envelope**:
+The deterministic top-level carrier structure (`success`, `data` or `error`, `meta`) wrapping all synchronous client and merchant API interactions across bounded contexts.
+_Avoid_: Response wrapper, JSON envelope, API response format
+
+**Hybrid Problem Envelope**:
+The error transmission structure encapsulating an RFC 7807 problem details document within the unified envelope to ensure uniform client-side discrimination.
+_Avoid_: Error payload, failure object, exception wrapper
+
+**Response Telemetry Carrier**:
+The metadata section (`meta`) within the unified envelope containing request correlation, latency accounting, and optional pagination descriptors.
+_Avoid_: Response meta, audit header, trace block
+
+**Offset Pagination Descriptor**:
+The structured pagination contract within the telemetry carrier detailing current page, page size, total record counts, and boundary traversal booleans.
+_Avoid_: Page info, pagination meta, paging block
+
+**Webhook Fast-ACK Contract**:
+The minimal, low-latency acknowledgement payload reserved exclusively for asynchronous third-party webhook receivers to preserve sub-25ms SLA.
+_Avoid_: Webhook reply, 200 OK wrapper, fast ack
+

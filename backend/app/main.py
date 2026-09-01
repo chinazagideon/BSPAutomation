@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import settings
 from app.core.database import check_db_health
 from app.core.trace import get_trace_id
+from app.core.response import ApiResponse, ApiErrorResponse
 from app.core.middleware import (
     TraceContextMiddleware,
     ProcessTimeMiddleware,
@@ -57,21 +58,22 @@ app = FastAPI(
 )
 
 # -----------------------------------------------------------------------------
-# RFC 7807 EXCEPTION HANDLERS (ADR-0028)
+# RFC 7807 HYBRID EXCEPTION HANDLERS (ADR-0028, ADR-0033)
 # -----------------------------------------------------------------------------
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
     trace_id = get_trace_id()
+    err_resp = ApiErrorResponse.create(
+        type_=f"urn:bsp:error:http_{exc.status_code}",
+        title=exc.detail if isinstance(exc.detail, str) else "HTTP Exception",
+        status_code=exc.status_code,
+        detail=str(exc.detail),
+        instance=str(request.url.path),
+        trace_id=trace_id,
+    )
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "type": f"urn:bsp:error:http_{exc.status_code}",
-            "title": exc.detail if isinstance(exc.detail, str) else "HTTP Exception",
-            "status": exc.status_code,
-            "detail": str(exc.detail),
-            "instance": str(request.url.path),
-            "trace_id": trace_id,
-        },
+        content=err_resp.model_dump(mode="json", by_alias=True),
         headers={"X-Trace-ID": trace_id, **(getattr(exc, "headers", None) or {})},
     )
 
@@ -79,16 +81,22 @@ async def custom_http_exception_handler(request: Request, exc: StarletteHTTPExce
 @app.exception_handler(RequestValidationError)
 async def custom_validation_exception_handler(request: Request, exc: RequestValidationError):
     trace_id = get_trace_id()
+    invalid_params = [
+        {"loc": list(err.get("loc", [])), "msg": err.get("msg", ""), "type": err.get("type", "")}
+        for err in exc.errors()
+    ]
+    err_resp = ApiErrorResponse.create(
+        type_="urn:bsp:error:validation_error",
+        title="Unprocessable Entity",
+        status_code=422,
+        detail=str(exc.errors()),
+        instance=str(request.url.path),
+        invalid_params=invalid_params,
+        trace_id=trace_id,
+    )
     return JSONResponse(
         status_code=422,
-        content={
-            "type": "urn:bsp:error:validation_error",
-            "title": "Unprocessable Entity",
-            "status": 422,
-            "detail": str(exc.errors()),
-            "instance": str(request.url.path),
-            "trace_id": trace_id,
-        },
+        content=err_resp.model_dump(mode="json", by_alias=True),
         headers={"X-Trace-ID": trace_id},
     )
 
@@ -119,29 +127,32 @@ app.include_router(desk_router, prefix=settings.API_V1_PREFIX)
 app.include_router(compliance_router, prefix=settings.API_V1_PREFIX)
 
 
-@app.get("/api/health", tags=["Health"])
+@app.get("/api/health", tags=["Health"], response_model=ApiResponse[dict])
 async def health_check():
     """System health check endpoint providing service uptime and infrastructure status."""
-    return {
+    data = {
         "status": "ok",
         "app": settings.APP_NAME,
         "environment": settings.ENVIRONMENT,
-        "nlu_pipeline": {
-            "stage_1_fast_path": settings.USE_FAST_PATH,
-            "stage_2_custom_model": settings.USE_CUSTOM_MODEL,
-            "stage_3_llm_escalation": settings.USE_LLM_ESCALATION,
+        "nluPipeline": {
+            "stage1FastPath": settings.USE_FAST_PATH,
+            "stage2CustomModel": settings.USE_CUSTOM_MODEL,
+            "stage3LlmEscalation": settings.USE_LLM_ESCALATION,
         },
         "adapters": {
             "payment": "MockMoniepoint" if settings.USE_MOCK_PAYMENT_GATEWAY else "MoniepointProduction",
             "whatsapp": "MockWhatsAppBSP" if settings.USE_MOCK_WHATSAPP_BSP else settings.WHATSAPP_BSP_PROVIDER,
         }
     }
+    return ApiResponse.create(data=data)
 
 
-@app.get("/", tags=["Health"])
+@app.get("/", tags=["Health"], response_model=ApiResponse[dict])
 async def root():
-    return {
+    data = {
         "message": f"Welcome to {settings.APP_NAME} Backend API",
         "docs": "/docs",
         "health": "/api/health",
     }
+    return ApiResponse.create(data=data)
+

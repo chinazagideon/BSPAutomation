@@ -2,10 +2,12 @@
 
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from app.core.response import CamelModel
 
 
-class SlotHoldRequest(BaseModel):
+class SlotHoldRequest(CamelModel):
     resource_id: UUID
     service_id: UUID
     customer_phone: str = "+2348031234567"
@@ -14,7 +16,7 @@ class SlotHoldRequest(BaseModel):
     hold_minutes: int = Field(10, ge=5, le=30)
 
 
-class SlotHoldResponse(BaseModel):
+class SlotHoldResponse(CamelModel):
     slot_id: UUID
     status: str
     resource_id: UUID
@@ -26,4 +28,3 @@ class SlotHoldResponse(BaseModel):
     deposit_required_naira: float
     deposit_required_kobo: int
 
-    model_config = {"from_attributes": True}

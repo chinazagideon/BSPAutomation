@@ -3,33 +3,35 @@
 from typing import List, Dict, Optional, Literal
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from app.core.response import CamelModel
 
 
-class RedactedEntity(BaseModel):
+class RedactedEntity(CamelModel):
     type: Literal["BVN", "NIN", "NUBAN", "CARD_PAN", "PHONE"]
     value: str
     token: str
 
 
-class PiiSanitizeRequest(BaseModel):
+class PiiSanitizeRequest(CamelModel):
     text: str = Field(..., min_length=1)
 
 
-class PiiSanitizeResponse(BaseModel):
+class PiiSanitizeResponse(CamelModel):
     original_text: str
     sanitized_text: str
     redacted_entities: List[RedactedEntity]
     safety_score: int
 
 
-class ConsentLogRequest(BaseModel):
+class ConsentLogRequest(CamelModel):
     customer_phone: str = "+2348031234567"
     action: Literal["OPT_IN", "OPT_OUT_STOP", "OPT_OUT_COMOT", "EXPLICIT_REVOCATION"]
     channel: str = "WHATSAPP"
 
 
-class ConsentEventRead(BaseModel):
+class ConsentEventRead(CamelModel):
     id: UUID
     merchant_id: UUID
     customer_phone: str
@@ -39,4 +41,3 @@ class ConsentEventRead(BaseModel):
     immutable_hash: str
     created_at: datetime
 
-    model_config = {"from_attributes": True}

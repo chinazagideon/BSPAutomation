@@ -17,9 +17,11 @@ async def test_ledger_validation_balanced(async_client: AsyncClient):
     }
     response = await async_client.post("/api/v1/ledger/validate", json=payload)
     assert response.status_code == 200
-    data = response.json()
-    assert data["is_balanced"] is True
-    assert data["is_amount_matched"] is True
+    resp_body = response.json()
+    assert resp_body["success"] is True
+    data = resp_body["data"]
+    assert data["isBalanced"] is True
+    assert data["isAmountMatched"] is True
     assert data["status"] == "SETTLED_BALANCED"
 
 
@@ -36,7 +38,10 @@ async def test_ledger_validation_imbalance_alert(async_client: AsyncClient):
     }
     response = await async_client.post("/api/v1/ledger/validate", json=payload)
     assert response.status_code == 200
-    data = response.json()
-    assert data["is_balanced"] is False
+    resp_body = response.json()
+    assert resp_body["success"] is True
+    data = resp_body["data"]
+    assert data["isBalanced"] is False
     assert data["status"] == "MISMATCH_ALERT"
-    assert data["ai_explanation"] is not None
+    assert data["aiExplanation"] is not None
+

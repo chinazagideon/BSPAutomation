@@ -31,14 +31,18 @@ async def test_register_merchant_and_owner(async_client: AsyncClient):
 
     response = await async_client.post("/api/v1/core/auth/register", json=payload)
     assert response.status_code == 201, response.text
-    data = response.json()
+    resp_body = response.json()
+    assert resp_body["success"] is True
+    assert "meta" in resp_body
+    assert "traceId" in resp_body["meta"]
+    data = resp_body["data"]
 
-    assert "access_token" in data
-    assert "refresh_token" in data
-    assert data["token_type"] == "bearer"
+    assert "accessToken" in data
+    assert "refreshToken" in data
+    assert data["tokenType"] == "bearer"
     assert data["role"] == "OWNER"
-    assert data["full_name"] == "Babajide Sanwo"
-    assert data["expires_in"] == 900
+    assert data["fullName"] == "Babajide Sanwo"
+    assert data["expiresIn"] == 900
 
     # Verify HttpOnly cookies are set
     cookies = response.cookies
@@ -73,19 +77,23 @@ async def test_login_and_get_user_profile(async_client: AsyncClient):
     login_payload = {"email": email, "password": password}
     login_res = await async_client.post("/api/v1/core/auth/login", json=login_payload)
     assert login_res.status_code == 200
-    token_data = login_res.json()
-    access_token = token_data["access_token"]
+    login_body = login_res.json()
+    assert login_body["success"] is True
+    token_data = login_body["data"]
+    access_token = token_data["accessToken"]
 
     # 3. Call GET /api/v1/core/auth/me
     headers = {"Authorization": f"Bearer {access_token}"}
     me_res = await async_client.get("/api/v1/core/auth/me", headers=headers)
     assert me_res.status_code == 200
-    me_data = me_res.json()
+    me_body = me_res.json()
+    assert me_body["success"] is True
+    me_data = me_body["data"]
 
     assert me_data["user"]["email"] == email
     assert me_data["user"]["role"] == "OWNER"
-    assert me_data["role_rank"] == 100
-    assert me_data["active_channel"] == "JWT"
+    assert me_data["roleRank"] == 100
+    assert me_data["activeChannel"] == "JWT"
     assert me_data["merchant"]["slug"] == f"alaba-spares-{unique_suffix}"
 
 
@@ -111,15 +119,19 @@ async def test_account_lockout_governor(async_client: AsyncClient):
     for _ in range(4):
         res = await async_client.post("/api/v1/core/auth/login", json={"email": email, "password": "WrongPassword"})
         assert res.status_code == 401
+        assert res.json()["success"] is False
 
     # 5th failure triggers lockout
     res_5 = await async_client.post("/api/v1/core/auth/login", json={"email": email, "password": "WrongPassword"})
     assert res_5.status_code == 401
+    assert res_5.json()["success"] is False
 
     # 6th attempt (even with correct password) is blocked by lockout governor with HTTP 429
     res_locked = await async_client.post("/api/v1/core/auth/login", json={"email": email, "password": password})
     assert res_locked.status_code == 429
-    assert "temporarily locked" in res_locked.json()["detail"]
+    err_body = res_locked.json()
+    assert err_body["success"] is False
+    assert "temporarily locked" in err_body["error"]["detail"]
 
 
 @pytest.mark.asyncio
@@ -138,7 +150,7 @@ async def test_refresh_token_rotation_and_concurrency_leeway(async_client: Async
         "owner_password": "Password123!",
         "owner_full_name": "Refresh Tester",
     })
-    initial_refresh_token = reg_res.json()["refresh_token"]
+    initial_refresh_token = reg_res.json()["data"]["refreshToken"]
 
     # 1. Rotate token
     rotate_res = await async_client.post(
@@ -146,8 +158,8 @@ async def test_refresh_token_rotation_and_concurrency_leeway(async_client: Async
         json={"refresh_token": initial_refresh_token},
     )
     assert rotate_res.status_code == 200
-    rotated_data = rotate_res.json()
-    new_refresh_token = rotated_data["refresh_token"]
+    rotated_data = rotate_res.json()["data"]
+    new_refresh_token = rotated_data["refreshToken"]
     assert new_refresh_token != initial_refresh_token
 
     # 2. Concurrency Leeway: Call immediately with the original token (within 5 seconds) -> succeeds!
@@ -156,7 +168,8 @@ async def test_refresh_token_rotation_and_concurrency_leeway(async_client: Async
         json={"refresh_token": initial_refresh_token},
     )
     assert leeway_res.status_code == 200
-    assert "access_token" in leeway_res.json()
+    assert leeway_res.json()["success"] is True
+    assert "accessToken" in leeway_res.json()["data"]
 
 
 @pytest.mark.asyncio
@@ -175,12 +188,12 @@ async def test_token_theft_replay_detection_revocation(async_client: AsyncClient
         "owner_password": "Password123!",
         "owner_full_name": "Theft Tester",
     })
-    token_1 = reg_res.json()["refresh_token"]
+    token_1 = reg_res.json()["data"]["refreshToken"]
 
     # Rotate token once
     rot_res = await async_client.post("/api/v1/core/auth/refresh", json={"refresh_token": token_1})
     assert rot_res.status_code == 200
-    token_2 = rot_res.json()["refresh_token"]
+    token_2 = rot_res.json()["data"]["refreshToken"]
 
     # Manually backdate consumed_at on token_1 in the DB by 10 seconds to simulate replay after leeway
     from app.core.security import compute_sha256_hash
@@ -198,12 +211,14 @@ async def test_token_theft_replay_detection_revocation(async_client: AsyncClient
     # Now attempt replay attack using token_1
     replay_res = await async_client.post("/api/v1/core/auth/refresh", json={"refresh_token": token_1})
     assert replay_res.status_code == 401
-    assert "Refresh token reuse detected" in replay_res.json()["detail"]
+    assert replay_res.json()["success"] is False
+    assert "Refresh token reuse detected" in replay_res.json()["error"]["detail"]
 
     # Verify that token_2 in the same family has also been revoked
     token_2_res = await async_client.post("/api/v1/core/auth/refresh", json={"refresh_token": token_2})
     assert token_2_res.status_code == 401
-    assert "revoked" in token_2_res.json()["detail"].lower()
+    assert token_2_res.json()["success"] is False
+    assert "revoked" in token_2_res.json()["error"]["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -215,6 +230,7 @@ async def test_strict_multi_tenant_isolation(async_client: AsyncClient):
         headers={"X-Merchant-ID": "018f6c5a-8b1e-7230-a890-123456789abc"},
     )
     assert res_no_auth.status_code == 401
+    assert res_no_auth.json()["success"] is False
 
     # 2. Calling with bogus JWT -> 401 Unauthorized
     res_bad_jwt = await async_client.get(
@@ -222,6 +238,7 @@ async def test_strict_multi_tenant_isolation(async_client: AsyncClient):
         headers={"Authorization": "Bearer invalid.jwt.token"},
     )
     assert res_bad_jwt.status_code == 401
+    assert res_bad_jwt.json()["success"] is False
 
 
 @pytest.mark.asyncio
@@ -237,7 +254,8 @@ async def test_linear_rbac_hierarchy(async_client: AsyncClient, auth_headers_fac
         headers=agent_headers,
     )
     assert res_agent.status_code == 403
-    assert "requires at least 'ADMIN'" in res_agent.json()["detail"]
+    assert res_agent.json()["success"] is False
+    assert "requires at least 'ADMIN'" in res_agent.json()["error"]["detail"]
 
     # 2. OWNER (rank 100) provisions a user -> 201 Created (or succeeds with DB session)
     # Register actual merchant & owner first to have matching DB foreign keys
@@ -251,7 +269,7 @@ async def test_linear_rbac_hierarchy(async_client: AsyncClient, auth_headers_fac
         "owner_full_name": "RBAC Owner",
     }
     reg_res = await async_client.post("/api/v1/core/auth/register", json=reg_payload)
-    owner_token = reg_res.json()["access_token"]
+    owner_token = reg_res.json()["data"]["accessToken"]
     owner_headers = {"Authorization": f"Bearer {owner_token}"}
 
     create_user_res = await async_client.post(
@@ -260,24 +278,30 @@ async def test_linear_rbac_hierarchy(async_client: AsyncClient, auth_headers_fac
         headers=owner_headers,
     )
     assert create_user_res.status_code == 201
-    assert create_user_res.json()["role"] == "AGENT"
+    assert create_user_res.json()["success"] is True
+    assert create_user_res.json()["data"]["role"] == "AGENT"
 
 
 @pytest.mark.asyncio
 async def test_middleware_pipeline_and_rfc7807_error(async_client: AsyncClient):
-    """Verifies X-Trace-ID, X-Process-Time-Ms headers, and RFC 7807 error envelopes (ADR-0028)."""
+    """Verifies X-Trace-ID, X-Process-Time-Ms headers, and Hybrid RFC 7807 error envelopes (ADR-0028, ADR-0033)."""
     # 1. Health check headers
     health_res = await async_client.get("/api/health")
     assert health_res.status_code == 200
+    assert health_res.json()["success"] is True
     assert "X-Trace-ID" in health_res.headers
     assert "X-Process-Time-Ms" in health_res.headers
 
-    # 2. 404 Error formatted as RFC 7807 Problem Details
+    # 2. 404 Error formatted as Hybrid RFC 7807 Problem Details
     not_found_res = await async_client.get("/api/v1/unknown-route-for-testing")
     assert not_found_res.status_code == 404
-    data = not_found_res.json()
-    assert "type" in data
-    assert "title" in data
-    assert data["status"] == 404
-    assert "trace_id" in data
-    assert data["trace_id"] == not_found_res.headers.get("X-Trace-ID")
+    body = not_found_res.json()
+    assert body["success"] is False
+    assert "error" in body
+    assert "type" in body["error"]
+    assert "title" in body["error"]
+    assert body["error"]["status"] == 404
+    assert "meta" in body
+    assert "traceId" in body["meta"]
+    assert body["meta"]["traceId"] == not_found_res.headers.get("X-Trace-ID")
+

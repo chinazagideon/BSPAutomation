@@ -10,9 +10,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from datetime import datetime, timezone
 from app.core.config import settings
 from app.core.trace import set_trace_id, get_trace_id, set_context_merchant_id
 from app.core.exceptions import DomainGatewayException
+from app.core.response import ApiErrorResponse
 
 
 # -----------------------------------------------------------------------------
@@ -51,66 +53,70 @@ class ProcessTimeMiddleware(BaseHTTPMiddleware):
 
 
 # -----------------------------------------------------------------------------
-# 3. GLOBAL RFC 7807 EXCEPTION NORMALIZATION MIDDLEWARE (ADR-0028)
+# 3. GLOBAL RFC 7807 EXCEPTION NORMALIZATION MIDDLEWARE (ADR-0028, ADR-0033)
 # -----------------------------------------------------------------------------
 class GlobalExceptionMiddleware(BaseHTTPMiddleware):
     """
     Catches all unhandled exceptions across bounded contexts and normalizes
-    them into standardized RFC 7807 Problem Details JSON envelopes.
+    them into standardized Hybrid RFC 7807 Problem Details JSON envelopes.
     """
     async def dispatch(self, request: Request, call_next):
         try:
             return await call_next(request)
         except StarletteHTTPException as exc:
             trace_id = get_trace_id()
+            err_resp = ApiErrorResponse.create(
+                type_=f"urn:bsp:error:http_{exc.status_code}",
+                title=exc.detail if isinstance(exc.detail, str) else "HTTP Exception",
+                status_code=exc.status_code,
+                detail=str(exc.detail),
+                instance=str(request.url.path),
+                trace_id=trace_id,
+            )
             return JSONResponse(
                 status_code=exc.status_code,
-                content={
-                    "type": f"urn:bsp:error:http_{exc.status_code}",
-                    "title": exc.detail if isinstance(exc.detail, str) else "HTTP Exception",
-                    "status": exc.status_code,
-                    "detail": str(exc.detail),
-                    "instance": str(request.url.path),
-                    "trace_id": trace_id,
-                },
+                content=err_resp.model_dump(mode="json", by_alias=True),
                 headers={"X-Trace-ID": trace_id, **(getattr(exc, "headers", None) or {})},
             )
         except DomainGatewayException as exc:
             trace_id = get_trace_id()
             status_code = exc.status_code or status.HTTP_502_BAD_GATEWAY
+            invalid_params = [{"errorCode": exc.error_code, "rawError": exc.raw_error}] if exc.error_code or exc.raw_error else None
+            err_resp = ApiErrorResponse.create(
+                type_=f"urn:bsp:error:gateway_{exc.provider.lower()}",
+                title=f"{exc.provider} Gateway Error",
+                status_code=status_code,
+                detail=exc.message,
+                instance=str(request.url.path),
+                invalid_params=invalid_params,
+                trace_id=trace_id,
+            )
             return JSONResponse(
                 status_code=status_code,
-                content={
-                    "type": f"urn:bsp:error:gateway_{exc.provider.lower()}",
-                    "title": f"{exc.provider} Gateway Error",
-                    "status": status_code,
-                    "detail": exc.message,
-                    "error_code": exc.error_code,
-                    "instance": str(request.url.path),
-                    "trace_id": trace_id,
-                },
+                content=err_resp.model_dump(mode="json", by_alias=True),
                 headers={"X-Trace-ID": trace_id},
             )
         except Exception as exc:
             trace_id = get_trace_id()
             print(f"[ERROR] Unhandled server exception [Trace: {trace_id}]: {str(exc)}")
             traceback.print_exc()
+            err_resp = ApiErrorResponse.create(
+                type_="urn:bsp:error:internal_server_error",
+                title="Internal Server Error",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="An unexpected error occurred while processing your request.",
+                instance=str(request.url.path),
+                trace_id=trace_id,
+            )
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={
-                    "type": "urn:bsp:error:internal_server_error",
-                    "title": "Internal Server Error",
-                    "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    "detail": "An unexpected error occurred while processing your request.",
-                    "instance": str(request.url.path),
-                    "trace_id": trace_id,
-                },
+                content=err_resp.model_dump(mode="json", by_alias=True),
                 headers={"X-Trace-ID": trace_id},
             )
 
 
 # -----------------------------------------------------------------------------
-# 4. TIERED SLIDING-WINDOW RATE LIMITING MIDDLEWARE (ADR-0030)
+# 4. TIERED SLIDING-WINDOW RATE LIMITING MIDDLEWARE (ADR-0030, ADR-0033)
 # -----------------------------------------------------------------------------
 class InMemorySlidingWindowLimiter:
     """Thread-safe in-memory sliding-window rate limiter fallback for offline dev/tests."""
@@ -165,16 +171,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
             if not allowed:
                 trace_id = get_trace_id()
+                err_resp = ApiErrorResponse.create(
+                    type_="urn:bsp:error:rate_limit_exceeded",
+                    title="Too Many Requests",
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Rate limit exceeded on authentication. Retry in {retry_after}s.",
+                    instance=path,
+                    trace_id=trace_id,
+                )
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
-                        "type": "urn:bsp:error:rate_limit_exceeded",
-                        "title": "Too Many Requests",
-                        "status": status.HTTP_429_TOO_MANY_REQUESTS,
-                        "detail": f"Rate limit exceeded on authentication. Retry in {retry_after}s.",
-                        "instance": path,
-                        "trace_id": trace_id,
-                    },
+                    content=err_resp.model_dump(mode="json", by_alias=True),
                     headers={"Retry-After": str(retry_after), "X-Trace-ID": trace_id},
                 )
 
@@ -188,16 +195,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
             if not allowed:
                 trace_id = get_trace_id()
+                err_resp = ApiErrorResponse.create(
+                    type_="urn:bsp:error:webhook_rate_limit_exceeded",
+                    title="Webhook Ingress Throttled",
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="High-volume webhook burst exceeded capacity. Retry shortly.",
+                    instance=path,
+                    trace_id=trace_id,
+                )
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
-                        "type": "urn:bsp:error:webhook_rate_limit_exceeded",
-                        "title": "Webhook Ingress Throttled",
-                        "status": status.HTTP_429_TOO_MANY_REQUESTS,
-                        "detail": "High-volume webhook burst exceeded capacity. Retry shortly.",
-                        "instance": path,
-                        "trace_id": trace_id,
-                    },
+                    content=err_resp.model_dump(mode="json", by_alias=True),
                     headers={"Retry-After": str(retry_after), "X-Trace-ID": trace_id},
                 )
 
@@ -211,16 +219,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
             if not allowed:
                 trace_id = get_trace_id()
+                err_resp = ApiErrorResponse.create(
+                    type_="urn:bsp:error:api_rate_limit_exceeded",
+                    title="API Rate Limit Exceeded",
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Merchant API quota exceeded. Please slow down. Retry in {retry_after}s.",
+                    instance=path,
+                    trace_id=trace_id,
+                )
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
-                        "type": "urn:bsp:error:api_rate_limit_exceeded",
-                        "title": "API Rate Limit Exceeded",
-                        "status": status.HTTP_429_TOO_MANY_REQUESTS,
-                        "detail": f"Merchant API quota exceeded. Please slow down. Retry in {retry_after}s.",
-                        "instance": path,
-                        "trace_id": trace_id,
-                    },
+                    content=err_resp.model_dump(mode="json", by_alias=True),
                     headers={"Retry-After": str(retry_after), "X-Trace-ID": trace_id},
                 )
 

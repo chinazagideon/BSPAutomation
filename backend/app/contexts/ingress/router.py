@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response, status, Header, HTTPE
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenant import get_tenant_db, get_current_tenant, TenantContext
+from app.core.response import ApiResponse
 from app.contexts.ingress.schemas import (
     NLUClassificationRequest,
     NLUClassificationResponse,
@@ -38,7 +39,7 @@ async def receive_whatsapp_webhook(
 ):
     """
     Ingress Webhook Receiver: Delivers sub-25ms 200 OK acknowledgement to Meta Cloud / Termii.
-    Persists raw webhook event and offloads processing to the background worker pool.
+    Persists raw webhook event and offloads processing to the background worker pool (ADR-0033 Fast-ACK).
     """
     return await IngressService.ingest_webhook_fast_ack(
         session=db,
@@ -48,7 +49,7 @@ async def receive_whatsapp_webhook(
     )
 
 
-@router.post("/classify", response_model=NLUClassificationResponse)
+@router.post("/classify", response_model=ApiResponse[NLUClassificationResponse])
 async def classify_message(
     payload: NLUClassificationRequest,
     tenant: TenantContext = Depends(get_current_tenant),
@@ -60,8 +61,10 @@ async def classify_message(
     2. Custom Local Model / HuggingFace (0 tokens, ~20ms)
     3. Google Gemini 3.7 Flash Escalation (~380ms)
     """
-    return await IngressService.classify_and_route(
+    result = await IngressService.classify_and_route(
         session=db,
         merchant_id=UUID(tenant.merchant_id),
         request=payload,
     )
+    return ApiResponse.create(data=result)
+
