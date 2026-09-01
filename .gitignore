@@ -7,4 +7,14 @@ coverage/
 .env*
 !.env.example
 
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/

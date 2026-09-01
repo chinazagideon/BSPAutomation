@@ -50,8 +50,31 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)
     full_name = Column(String(256), nullable=False)
     role = Column(String(32), nullable=False, default="AGENT")
+    failed_login_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     merchant = relationship("Merchant", back_populates="users")
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class RefreshToken(Base):
+    """Cryptographically hashed rotating refresh token with family lineage tracking."""
+    __tablename__ = "refresh_tokens"
+    __table_args__ = {"schema": "core"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("core.users.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    family_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    is_revoked = Column(Boolean, nullable=False, default=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="refresh_tokens")
+    merchant = relationship("Merchant")
+

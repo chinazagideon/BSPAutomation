@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS core.users (
   role VARCHAR(32) NOT NULL DEFAULT 'AGENT' 
     CHECK (role IN ('OWNER', 'ADMIN', 'MANAGER', 'AGENT', 'READ_ONLY')),
   password_hash TEXT NOT NULL,
+  failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until TIMESTAMPTZ,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -119,6 +121,22 @@ CREATE TABLE IF NOT EXISTS core.users (
 CREATE TRIGGER trg_users_updated_at
   BEFORE UPDATE ON core.users
   FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
+CREATE TABLE IF NOT EXISTS core.refresh_tokens (
+  id UUID PRIMARY KEY DEFAULT core.generate_uuid_v7(),
+  merchant_id UUID NOT NULL REFERENCES core.merchants(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES core.users(id) ON DELETE CASCADE,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  family_id UUID NOT NULL,
+  is_revoked BOOLEAN NOT NULL DEFAULT FALSE,
+  consumed_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX idx_refresh_tokens_hash ON core.refresh_tokens (token_hash);
+CREATE INDEX idx_refresh_tokens_family ON core.refresh_tokens (family_id);
+CREATE INDEX idx_refresh_tokens_user ON core.refresh_tokens (user_id);
 
 -- ============================================================================
 -- 2. INGRESS & NLU CONTEXT
@@ -656,6 +674,15 @@ CREATE POLICY tenant_isolation_consent_events ON compliance.consent_events
   FOR ALL USING (merchant_id = core.current_tenant_id());
 
 CREATE POLICY tenant_isolation_redaction_logs ON compliance.redaction_audit_logs
+  FOR ALL USING (merchant_id = core.current_tenant_id());
+
+ALTER TABLE core.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.refresh_tokens ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_users ON core.users
+  FOR ALL USING (merchant_id = core.current_tenant_id());
+
+CREATE POLICY tenant_isolation_refresh_tokens ON core.refresh_tokens
   FOR ALL USING (merchant_id = core.current_tenant_id());
 
 -- ============================================================================

@@ -16,7 +16,20 @@ class Settings(BaseSettings):
     APP_NAME: str = "Enterprise WhatsApp Platform"
     ENVIRONMENT: Literal["development", "staging", "production", "test"] = "development"
     DEBUG: bool = True
+    # API & Route Prefixes
     API_V1_PREFIX: str = "/api/v1"
+    CORE_PREFIX: str = "/core"
+    AUTH_PREFIX: str = "/auth"
+    INGRESS_PREFIX: str = "/ingress"
+    LEDGER_PREFIX: str = "/ledger"
+    RESERVATIONS_PREFIX: str = "/reservations"
+    DESK_PREFIX: str = "/desk"
+    COMPLIANCE_PREFIX: str = "/compliance"
+
+    @property
+    def auth_cookie_path(self) -> str:
+        """Dynamic scoped path for refresh token cookie isolation."""
+        return f"{self.API_V1_PREFIX}{self.CORE_PREFIX}{self.AUTH_PREFIX}"
 
     # Database & Redis Infrastructure
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/bsp_whatsapp_enterprise"
@@ -28,7 +41,14 @@ class Settings(BaseSettings):
     # Security & PII Encryption
     SECRET_KEY: str = "dev_insecure_secret_key_replace_in_production_with_strong_entropy_32char"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    REFRESH_TOKEN_GRACE_SECONDS: int = 5
+    ACCOUNT_LOCKOUT_THRESHOLD: int = 5
+    ACCOUNT_LOCKOUT_DURATION_MINUTES: int = 15
+    AUTH_RATE_LIMIT_PER_MINUTE: int = 15
+    MERCHANT_API_RATE_LIMIT_PER_MINUTE: int = 120
+    WEBHOOK_RATE_LIMIT_PER_SECOND: int = 500
     PII_TOKEN_AES_KEY: str = "0123456789abcdef0123456789abcdef"
 
     # -------------------------------------------------------------

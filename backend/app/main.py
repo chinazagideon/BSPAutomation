@@ -4,10 +4,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import time
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.database import check_db_health
+from app.core.trace import get_trace_id
+from app.core.middleware import (
+    TraceContextMiddleware,
+    ProcessTimeMiddleware,
+    GlobalExceptionMiddleware,
+    RateLimitMiddleware,
+)
 
 # Bounded Context Routers
 from app.contexts.core.router import router as core_router
@@ -26,7 +34,7 @@ async def lifespan(app: FastAPI):
           f"FastPath={settings.USE_FAST_PATH} (Threshold={settings.FAST_PATH_CONFIDENCE_THRESHOLD}), "
           f"CustomModel={settings.USE_CUSTOM_MODEL} ({settings.CUSTOM_MODEL_TYPE}, Threshold={settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD}), "
           f"LLMEscalation={settings.USE_LLM_ESCALATION}")
-    
+
     # DB Connectivity check
     is_db_healthy = await check_db_health()
     if is_db_healthy:
@@ -48,7 +56,48 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS Middleware
+# -----------------------------------------------------------------------------
+# RFC 7807 EXCEPTION HANDLERS (ADR-0028)
+# -----------------------------------------------------------------------------
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    trace_id = get_trace_id()
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "type": f"urn:bsp:error:http_{exc.status_code}",
+            "title": exc.detail if isinstance(exc.detail, str) else "HTTP Exception",
+            "status": exc.status_code,
+            "detail": str(exc.detail),
+            "instance": str(request.url.path),
+            "trace_id": trace_id,
+        },
+        headers={"X-Trace-ID": trace_id, **(getattr(exc, "headers", None) or {})},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def custom_validation_exception_handler(request: Request, exc: RequestValidationError):
+    trace_id = get_trace_id()
+    return JSONResponse(
+        status_code=422,
+        content={
+            "type": "urn:bsp:error:validation_error",
+            "title": "Unprocessable Entity",
+            "status": 422,
+            "detail": str(exc.errors()),
+            "instance": str(request.url.path),
+            "trace_id": trace_id,
+        },
+        headers={"X-Trace-ID": trace_id},
+    )
+
+
+# -----------------------------------------------------------------------------
+# GLOBAL MIDDLEWARE STACK (ADR-0028, ADR-0030)
+# (Added in reverse order so TraceContext is the outermost layer)
+# -----------------------------------------------------------------------------
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,16 +105,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# Global Latency Header Middleware
-@app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    start_time = time.perf_counter()
-    response = await call_next(request)
-    process_time = (time.perf_counter() - start_time) * 1000.0
-    response.headers["X-Process-Time-Ms"] = f"{process_time:.2f}"
-    return response
+app.add_middleware(GlobalExceptionMiddleware)
+app.add_middleware(ProcessTimeMiddleware)
+app.add_middleware(TraceContextMiddleware)
 
 
 # Mount Bounded Context Routers

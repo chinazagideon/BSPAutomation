@@ -78,5 +78,75 @@ def generate_pii_token(entity_type: str, raw_value: str, salt: str = "") -> str:
 
 
 def compute_sha256_hash(data: str) -> str:
-    """Computes a SHA-256 hexadecimal digest for cryptographic audit chaining."""
+    """Computes a SHA-256 hexadecimal digest for cryptographic audit chaining and token indexing."""
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+# Refresh Token Utilities
+import secrets
+from fastapi import Response
+
+
+def generate_refresh_token() -> tuple[str, str]:
+    """
+    Generates a high-entropy cryptographically secure refresh token (64 hex characters)
+    and its SHA-256 hash for database storage.
+    Returns: (raw_token, token_hash)
+    """
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = compute_sha256_hash(raw_token)
+    return raw_token, token_hash
+
+
+def set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: Optional[str] = None,
+    refresh_cookie_path: Optional[str] = None,
+) -> None:
+    """Sets secure HttpOnly cookies for browser-based admin portals."""
+    is_secure = settings.ENVIRONMENT in ["production", "staging"]
+    target_refresh_path = refresh_cookie_path or settings.auth_cookie_path
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        path="/",
+    )
+    if refresh_token:
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            path=target_refresh_path,
+        )
+
+
+def clear_auth_cookies(
+    response: Response,
+    refresh_cookie_path: Optional[str] = None,
+) -> None:
+    """Clears authentication cookies on logout."""
+    target_refresh_path = refresh_cookie_path or settings.auth_cookie_path
+    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path=target_refresh_path)
+
+
+# Hashed API Key Verification (for B2B / Admin Integrations)
+def hash_api_key(api_key: str) -> str:
+    """Hashes a merchant B2B API key using SHA-256."""
+    return compute_sha256_hash(api_key)
+
+
+def verify_api_key(plain_key: str, hashed_key: str) -> bool:
+    """Constant-time comparison for API keys."""
+    computed_hash = hash_api_key(plain_key)
+    return hmac.compare_digest(computed_hash, hashed_key)
+
