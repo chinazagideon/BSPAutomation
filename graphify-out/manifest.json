@@ -1,0 +1,262 @@
+{
+  "docs/schema/001_enterprise_schema.sql": {
+    "mtime": 1788196303.180495,
+    "ast_hash": "66e90cfcf4aebdee55810565a13a9c17",
+    "semantic_hash": "66e90cfcf4aebdee55810565a13a9c17"
+  },
+  "metadata.json": {
+    "mtime": 1788196303.1832266,
+    "ast_hash": "917c9e4e78c2053644569d5309563b94",
+    "semantic_hash": "917c9e4e78c2053644569d5309563b94"
+  },
+  "package.json": {
+    "mtime": 1788196336.764217,
+    "ast_hash": "99e24d0676f01f5e93d3969bdf8f2b57",
+    "semantic_hash": "99e24d0676f01f5e93d3969bdf8f2b57"
+  },
+  "server.ts": {
+    "mtime": 1788196303.1840525,
+    "ast_hash": "ab57ed0c89eb693597a83afcffef37a0",
+    "semantic_hash": "ab57ed0c89eb693597a83afcffef37a0"
+  },
+  "src/App.tsx": {
+    "mtime": 1788196303.1843622,
+    "ast_hash": "7a818bc5f5eddfe00053e323ddb76c57",
+    "semantic_hash": "7a818bc5f5eddfe00053e323ddb76c57"
+  },
+  "src/components/AntiGhostingLedger.tsx": {
+    "mtime": 1788196303.1846826,
+    "ast_hash": "27c2240bfa1908cf045cde138449938b",
+    "semantic_hash": "27c2240bfa1908cf045cde138449938b"
+  },
+  "src/components/AtomicReservationGrid.tsx": {
+    "mtime": 1788196303.184878,
+    "ast_hash": "d7fae6f068299dd3d95285c618767fae",
+    "semantic_hash": "d7fae6f068299dd3d95285c618767fae"
+  },
+  "src/components/Header.tsx": {
+    "mtime": 1788196303.1850917,
+    "ast_hash": "433d949fbf786abcf2710062c760c341",
+    "semantic_hash": "433d949fbf786abcf2710062c760c341"
+  },
+  "src/components/NluIntentMatrix.tsx": {
+    "mtime": 1788196303.1852543,
+    "ast_hash": "42b916d80aa55a3a6cedea105f193159",
+    "semantic_hash": "42b916d80aa55a3a6cedea105f193159"
+  },
+  "src/components/PiiNdpaVault.tsx": {
+    "mtime": 1788196303.1854575,
+    "ast_hash": "14914d50387b4ab431923c53ad5c3412",
+    "semantic_hash": "14914d50387b4ab431923c53ad5c3412"
+  },
+  "src/components/ResilientAgentDesk.tsx": {
+    "mtime": 1788196303.185676,
+    "ast_hash": "c7d2ce4b6da7944ad0c93af146f2c45d",
+    "semantic_hash": "c7d2ce4b6da7944ad0c93af146f2c45d"
+  },
+  "src/components/WebhookInspector.tsx": {
+    "mtime": 1788196303.1858428,
+    "ast_hash": "7472af290a8d0f70f5430606b291fee6",
+    "semantic_hash": "7472af290a8d0f70f5430606b291fee6"
+  },
+  "src/components/WhatsAppPhoneSimulator.tsx": {
+    "mtime": 1788196303.185987,
+    "ast_hash": "cde4f9ae358513937d5cd6494637d427",
+    "semantic_hash": "cde4f9ae358513937d5cd6494637d427"
+  },
+  "src/data/mockData.ts": {
+    "mtime": 1788196303.1862078,
+    "ast_hash": "0a2c5b2b6db36aed652593aba584ffbf",
+    "semantic_hash": "0a2c5b2b6db36aed652593aba584ffbf"
+  },
+  "src/main.tsx": {
+    "mtime": 1788196303.1863878,
+    "ast_hash": "2b36426d5ad7e08ef79746aa524f4fb7",
+    "semantic_hash": "2b36426d5ad7e08ef79746aa524f4fb7"
+  },
+  "src/types.ts": {
+    "mtime": 1788196303.186488,
+    "ast_hash": "9ae8637691aea6bf24140f95e617d176",
+    "semantic_hash": "9ae8637691aea6bf24140f95e617d176"
+  },
+  "tsconfig.json": {
+    "mtime": 1788196303.18658,
+    "ast_hash": "8827451c4e35790dd3f3538c265e7d15",
+    "semantic_hash": "8827451c4e35790dd3f3538c265e7d15"
+  },
+  "vite.config.ts": {
+    "mtime": 1788196303.1866672,
+    "ast_hash": "9c319043c25764dfe83b687f74637c6c",
+    "semantic_hash": "9c319043c25764dfe83b687f74637c6c"
+  },
+  "CONTEXT-MAP.md": {
+    "mtime": 1788196303.175163,
+    "ast_hash": "3f4fcf844f11e4d63d6a34521a23912b",
+    "semantic_hash": "3f4fcf844f11e4d63d6a34521a23912b"
+  },
+  "README.md": {
+    "mtime": 1788196303.1752944,
+    "ast_hash": "c72aaa8af19b62b8b19ec48f919e0c13",
+    "semantic_hash": "c72aaa8af19b62b8b19ec48f919e0c13"
+  },
+  "docs/adr/0001-multi-context-architecture.md": {
+    "mtime": 1788196303.1762826,
+    "ast_hash": "91b2ebb1313224de51179e8817d28328",
+    "semantic_hash": "91b2ebb1313224de51179e8817d28328"
+  },
+  "docs/adr/0002-python-fastapi-backend.md": {
+    "mtime": 1788196303.1764343,
+    "ast_hash": "b7b0ed40009f343b0f1b91d91690006a",
+    "semantic_hash": "b7b0ed40009f343b0f1b91d91690006a"
+  },
+  "docs/adr/0003-dual-layer-gist-redis-reservation-holds.md": {
+    "mtime": 1788196303.1765594,
+    "ast_hash": "9005971f9e317b2ae969013e6784a4e4",
+    "semantic_hash": "9005971f9e317b2ae969013e6784a4e4"
+  },
+  "docs/adr/0004-swappable-moniepoint-payment-adapter.md": {
+    "mtime": 1788196303.1766708,
+    "ast_hash": "d599ce7f2dcebcae8f839ff1ec6d3f9a",
+    "semantic_hash": "d599ce7f2dcebcae8f839ff1ec6d3f9a"
+  },
+  "docs/adr/0005-decoupled-whatsapp-bsp-interface.md": {
+    "mtime": 1788196303.176781,
+    "ast_hash": "b5b2ab40eb57b0c8ba0805cc2f76685b",
+    "semantic_hash": "b5b2ab40eb57b0c8ba0805cc2f76685b"
+  },
+  "docs/adr/0006-tiered-prepaid-ai-token-billing.md": {
+    "mtime": 1788196303.176898,
+    "ast_hash": "970be7bb270b463eb761ec165efa22ea",
+    "semantic_hash": "970be7bb270b463eb761ec165efa22ea"
+  },
+  "docs/adr/0007-merchant-configurable-variance-tolerance.md": {
+    "mtime": 1788196303.1770103,
+    "ast_hash": "09d1a51c9f4bf3f5966ab7696d20f1a3",
+    "semantic_hash": "09d1a51c9f4bf3f5966ab7696d20f1a3"
+  },
+  "docs/adr/0008-tenant-resource-gist-exclusion.md": {
+    "mtime": 1788196303.1771247,
+    "ast_hash": "596ad2f8c58559a32db8c6a3d40d4085",
+    "semantic_hash": "596ad2f8c58559a32db8c6a3d40d4085"
+  },
+  "docs/adr/0009-nepa-heartbeat-and-transparent-failover.md": {
+    "mtime": 1788196303.177252,
+    "ast_hash": "6fddb1f0eb8d517f6854bf82b8ec4826",
+    "semantic_hash": "6fddb1f0eb8d517f6854bf82b8ec4826"
+  },
+  "docs/adr/0010-ephemeral-encrypted-pii-token-vault.md": {
+    "mtime": 1788196303.1774187,
+    "ast_hash": "86df7d02a54a1790c787c43197433344",
+    "semantic_hash": "86df7d02a54a1790c787c43197433344"
+  },
+  "docs/adr/0011-dynamic-lead-qualification-engine.md": {
+    "mtime": 1788196303.1775577,
+    "ast_hash": "9c3eb2f8793169ed9859a11db3c6635d",
+    "semantic_hash": "9c3eb2f8793169ed9859a11db3c6635d"
+  },
+  "docs/adr/0012-four-leg-double-entry-accounting.md": {
+    "mtime": 1788196303.177709,
+    "ast_hash": "c4d60eb9c930a9d4a250b3581647f935",
+    "semantic_hash": "c4d60eb9c930a9d4a250b3581647f935"
+  },
+  "docs/adr/0013-dynamic-virtual-nuban-session-matching.md": {
+    "mtime": 1788196303.1778417,
+    "ast_hash": "9a3d83a9fb947e6cec018b7df8997da8",
+    "semantic_hash": "9a3d83a9fb947e6cec018b7df8997da8"
+  },
+  "docs/adr/0014-deterministic-ndpa-optout-keywords.md": {
+    "mtime": 1788196303.177954,
+    "ast_hash": "11233691f53a31ad2a5d794468d0d0d3",
+    "semantic_hash": "11233691f53a31ad2a5d794468d0d0d3"
+  },
+  "docs/adr/0015-standardized-agent-context-synthesis.md": {
+    "mtime": 1788196303.1780672,
+    "ast_hash": "b4494e3afefe8747d98b66eea2c68e48",
+    "semantic_hash": "b4494e3afefe8747d98b66eea2c68e48"
+  },
+  "docs/adr/0016-postgresql-schemas-rls-uuidv7.md": {
+    "mtime": 1788196303.1781912,
+    "ast_hash": "9a134a0fee606bb3e232e029b4b711ac",
+    "semantic_hash": "9a134a0fee606bb3e232e029b4b711ac"
+  },
+  "docs/adr/0017-kobo-precision-three-table-ledger.md": {
+    "mtime": 1788196303.1783407,
+    "ast_hash": "d529dac287f7d520f8e78506cc70d0f2",
+    "semantic_hash": "d529dac287f7d520f8e78506cc70d0f2"
+  },
+  "docs/adr/0018-virtual-nuban-pool-quarantine.md": {
+    "mtime": 1788196303.1784723,
+    "ast_hash": "429ed3b3176136d274368014d06accbd",
+    "semantic_hash": "429ed3b3176136d274368014d06accbd"
+  },
+  "docs/adr/0019-partial-gist-active-slots.md": {
+    "mtime": 1788196303.1785917,
+    "ast_hash": "feca8c23401dfd8eee579fbf4d20d8cb",
+    "semantic_hash": "feca8c23401dfd8eee579fbf4d20d8cb"
+  },
+  "docs/adr/0020-sha256-chained-consent-ledger.md": {
+    "mtime": 1788196303.1787188,
+    "ast_hash": "4e6ae856f6bcafc8b9001ce2ac23aa19",
+    "semantic_hash": "4e6ae856f6bcafc8b9001ce2ac23aa19"
+  },
+  "docs/adr/0021-check-constraints-over-native-enums.md": {
+    "mtime": 1788196303.1788542,
+    "ast_hash": "5afa6d61e64fa2fcbbf13a667368f061",
+    "semantic_hash": "5afa6d61e64fa2fcbbf13a667368f061"
+  },
+  "docs/adr/0022-gin-trigram-indexing-nigerian-slang.md": {
+    "mtime": 1788196303.178974,
+    "ast_hash": "8234bde33141d892b5c03701c2d5e935",
+    "semantic_hash": "8234bde33141d892b5c03701c2d5e935"
+  },
+  "docs/contexts/agent-desk/CONTEXT.md": {
+    "mtime": 1788196303.1792624,
+    "ast_hash": "f532a93b41d7f0c5a372dac2026d62b3",
+    "semantic_hash": "f532a93b41d7f0c5a372dac2026d62b3"
+  },
+  "docs/contexts/checkout-ledger/CONTEXT.md": {
+    "mtime": 1788196303.1794848,
+    "ast_hash": "85ac1024e5aab19d4d19add99ffe29e7",
+    "semantic_hash": "85ac1024e5aab19d4d19add99ffe29e7"
+  },
+  "docs/contexts/compliance/CONTEXT.md": {
+    "mtime": 1788196303.1797898,
+    "ast_hash": "6e08f795ae84f2e792cf4cad77fd3bee",
+    "semantic_hash": "6e08f795ae84f2e792cf4cad77fd3bee"
+  },
+  "docs/contexts/ingress-nlu/CONTEXT.md": {
+    "mtime": 1788196303.1800373,
+    "ast_hash": "8d97714c39524b61fd5c9ea1f50bf887",
+    "semantic_hash": "8d97714c39524b61fd5c9ea1f50bf887"
+  },
+  "docs/contexts/reservations/CONTEXT.md": {
+    "mtime": 1788196303.1802511,
+    "ast_hash": "114022479ea855bc3485499ab0abb911",
+    "semantic_hash": "114022479ea855bc3485499ab0abb911"
+  },
+  "docs/schema/SCHEMA_DESIGN.md": {
+    "mtime": 1788196303.1807244,
+    "ast_hash": "babed6856afe1a37f222f45b7c3c4906",
+    "semantic_hash": "babed6856afe1a37f222f45b7c3c4906"
+  },
+  "index.html": {
+    "mtime": 1788196303.1808846,
+    "ast_hash": "9b8526ee143ac3cce491caafa6369b92",
+    "semantic_hash": "9b8526ee143ac3cce491caafa6369b92"
+  },
+  "marmaid/BAS For Nigeria SMEs.pdf": {
+    "mtime": 1788196303.1817029,
+    "ast_hash": "f62b0839ef11797a8980979ab1cba2a2",
+    "semantic_hash": "f62b0839ef11797a8980979ab1cba2a2"
+  },
+  "marmaid/Payment Timeout Flow-2026-08-29-005726.pdf": {
+    "mtime": 1788196303.1830316,
+    "ast_hash": "9fe3a0090faa093c097f40d21386f8f1",
+    "semantic_hash": "9fe3a0090faa093c097f40d21386f8f1"
+  },
+  "prd/Project Handoff Document_ Enterprise Conversational Workflow Platform for Nigerian SMEs.pdf": {
+    "mtime": 1788196303.1838305,
+    "ast_hash": "71906328292e7df3b9ecea155347b9a6",
+    "semantic_hash": "71906328292e7df3b9ecea155347b9a6"
+  }
+}
