@@ -132,3 +132,46 @@ async def test_egress_client_schema_mismatch_exception():
                 response_dto=SampleExpectedResponseDTO,
                 target_service="MONIEPOINT_MFB",
             )
+
+
+def test_audited_http_client_requires_managed_httpx_instance():
+    """Verifies fail-fast guard: AuditedHttpClient rejects unmanaged or None client."""
+    with pytest.raises(TypeError) as exc:
+        AuditedHttpClient(client=None)  # type: ignore
+    assert "strictly requires an explicit, managed httpx.AsyncClient" in str(exc.value)
+
+    with pytest.raises(TypeError):
+        AuditedHttpClient(client="not_a_client")  # type: ignore
+
+
+def test_adapters_require_audited_http_client_instance():
+    """Verifies Meta and Moniepoint adapters strictly require AuditedHttpClient."""
+    from app.adapters.whatsapp import MetaCloudWhatsAppAdapter
+    with pytest.raises(TypeError) as exc_meta:
+        MetaCloudWhatsAppAdapter("token", "phone_id", http_client=None)  # type: ignore
+    assert "strictly requires an explicit, managed AuditedHttpClient" in str(exc_meta.value)
+
+    with pytest.raises(TypeError) as exc_monie:
+        MoniepointAdapter("key", "https://api.test", http_client=None)  # type: ignore
+    assert "strictly requires an explicit, managed AuditedHttpClient" in str(exc_monie.value)
+
+
+def test_lifespan_registry_fail_fast_and_resolution():
+    """Verifies that get_default_audited_client raises RuntimeError if uninitialized."""
+    import app.core.egress as egress_module
+    from app.core.egress import get_default_audited_client, set_default_audited_client
+
+    original = egress_module._LIFESPAN_AUDITED_CLIENT
+    try:
+        egress_module._LIFESPAN_AUDITED_CLIENT = None
+        with pytest.raises(RuntimeError) as exc:
+            get_default_audited_client()
+        assert "not been initialized in application lifespan" in str(exc.value)
+
+        # Register dummy and verify resolution
+        dummy_httpx = httpx.AsyncClient()
+        dummy_audited = AuditedHttpClient(client=dummy_httpx)
+        set_default_audited_client(dummy_audited)
+        assert get_default_audited_client() is dummy_audited
+    finally:
+        egress_module._LIFESPAN_AUDITED_CLIENT = original

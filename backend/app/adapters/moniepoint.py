@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.adapters.base import PaymentGatewayPort
 from app.core.config import settings
-from app.core.egress import AuditedHttpClient, audited_http_client
+from app.core.egress import AuditedHttpClient
 
 
 # =============================================================================
@@ -47,10 +47,12 @@ class MoniepointSettlementResponseDTO(BaseModel):
 class MoniepointAdapter(PaymentGatewayPort):
     """Production Moniepoint MFB Adapter using AuditedHttpClient Anti-Corruption Layer."""
 
-    def __init__(self, api_key: str, base_url: str, http_client: Optional[AuditedHttpClient] = None):
+    def __init__(self, api_key: str, base_url: str, http_client: AuditedHttpClient):
+        if not isinstance(http_client, AuditedHttpClient):
+            raise TypeError("MoniepointAdapter strictly requires an explicit, managed AuditedHttpClient instance")
         self.api_key = api_key
         self.base_url = base_url
-        self.http_client = http_client or audited_http_client
+        self.http_client = http_client
 
     async def generate_virtual_nuban(
         self,
@@ -144,4 +146,6 @@ def get_payment_gateway_adapter(http_client: Optional[AuditedHttpClient] = None)
     """Factory creating payment gateway adapter based on configuration."""
     if settings.USE_MOCK_PAYMENT_GATEWAY or not settings.MONIEPOINT_API_KEY:
         return MockMoniepointAdapter()
-    return MoniepointAdapter(settings.MONIEPOINT_API_KEY, settings.MONIEPOINT_BASE_URL, http_client=http_client)
+    from app.core.egress import get_default_audited_client
+    resolved_client = http_client or get_default_audited_client()
+    return MoniepointAdapter(settings.MONIEPOINT_API_KEY, settings.MONIEPOINT_BASE_URL, http_client=resolved_client)

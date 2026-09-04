@@ -62,17 +62,18 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 async def tenant_session_scope(merchant_id: str) -> AsyncGenerator[AsyncSession, None]:
     """Context manager setting PostgreSQL Row-Level Security (RLS) tenant parameter."""
     async with async_session_factory() as session:
-        async with session.begin():
-            await session.execute(
-                text("SELECT set_config('app.current_merchant_id', :merchant_id, true)"),
-                {"merchant_id": str(merchant_id)},
-            )
-            try:
-                yield session
+        await session.execute(
+            text("SELECT set_config('app.current_merchant_id', :merchant_id, false)"),
+            {"merchant_id": str(merchant_id)},
+        )
+        try:
+            yield session
+            if session.is_active and session.in_transaction():
                 await session.commit()
-            except Exception:
+        except Exception:
+            if session.is_active and session.in_transaction():
                 await session.rollback()
-                raise
+            raise
 
 
 async def check_db_health() -> bool:

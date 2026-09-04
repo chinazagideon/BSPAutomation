@@ -66,6 +66,44 @@ class WhatsAppBSPPort(ABC):
         """Dispatches an interactive button menu for structured fast-path responses."""
         pass
 
+    @abstractmethod
+    async def send_template_message(
+        self,
+        to_phone: str,
+        template_name: str,
+        language_code: str = "en",
+        components: Optional[List[Dict[str, Any]]] = None,
+        phone_number_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Dispatches a registered WhatsApp Business Template (utility, marketing, authentication)."""
+        pass
+
+    @abstractmethod
+    async def send_media_message(
+        self,
+        to_phone: str,
+        media_type: str,  # document, image, audio
+        media_url: str,
+        caption: Optional[str] = None,
+        filename: Optional[str] = None,
+        phone_number_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Dispatches a rich media message (PDF invoice, product image, audio)."""
+        pass
+
+    @abstractmethod
+    async def send_interactive_list(
+        self,
+        to_phone: str,
+        header_text: str,
+        body_text: str,
+        button_title: str,
+        sections: List[Dict[str, Any]],
+        phone_number_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Dispatches an interactive list picker (up to 10 options across sections)."""
+        pass
+
 
 class CustomClassifierPort(ABC):
     """Port interface for in-process custom ML models (HuggingFace / ONNX)."""

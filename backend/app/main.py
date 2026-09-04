@@ -30,13 +30,29 @@ from app.contexts.compliance.router import router as compliance_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifespan lifecycle events."""
-    print(f"[{settings.APP_NAME}] Starting up in {settings.ENVIRONMENT} mode...")
+    from app.core.egress import create_pooled_http_client, AuditedHttpClient, set_default_audited_client
+    from app.core.telemetry import init_telemetry, shutdown_telemetry
+    from app.core.logging import get_logger
+
+    # 0. Initialize OpenTelemetry & Structured Logging
+    if settings.OTEL_ENABLED:
+        init_telemetry(settings.OTEL_SERVICE_NAME)
+
+    logger = get_logger("app.main")
+    logger.info("app_starting", app_name=settings.APP_NAME, environment=settings.ENVIRONMENT)
     print(f"[{settings.APP_NAME}] NLU State Controllers -> "
           f"FastPath={settings.USE_FAST_PATH} (Threshold={settings.FAST_PATH_CONFIDENCE_THRESHOLD}), "
           f"CustomModel={settings.USE_CUSTOM_MODEL} ({settings.CUSTOM_MODEL_TYPE}, Threshold={settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD}), "
           f"LLMEscalation={settings.USE_LLM_ESCALATION}")
 
-    # DB Connectivity check
+    # 1. Initialize Managed Egress Connection Pool
+    pooled_httpx = create_pooled_http_client()
+    audited_client = AuditedHttpClient(client=pooled_httpx)
+    app.state.pooled_httpx = pooled_httpx
+    app.state.audited_http_client = audited_client
+    set_default_audited_client(audited_client)
+
+    # 2. DB Connectivity check
     is_db_healthy = await check_db_health()
     if is_db_healthy:
         print(f"[{settings.APP_NAME}] PostgreSQL Database connected successfully.")
@@ -44,7 +60,16 @@ async def lifespan(app: FastAPI):
         print(f"[{settings.APP_NAME}] PostgreSQL Database not reachable at {settings.DATABASE_URL}. (Using mock mode for tests/dev)")
 
     yield
+
     print(f"[{settings.APP_NAME}] Shutting down gracefully...")
+    # Teardown Managed Connection Pool
+    if hasattr(app.state, "pooled_httpx"):
+        await app.state.pooled_httpx.aclose()
+        print(f"[{settings.APP_NAME}] Egress HTTP connection pool closed successfully.")
+
+    # Teardown OpenTelemetry TracerProvider & Flush Spans
+    if settings.OTEL_ENABLED:
+        await shutdown_telemetry()
 
 
 # FastAPI Application Instance
@@ -56,6 +81,13 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+if settings.OTEL_ENABLED:
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)
+    except Exception as err:
+        print(f"[Telemetry] FastAPI instrumentation skipped: {err}")
 
 # -----------------------------------------------------------------------------
 # RFC 7807 HYBRID EXCEPTION HANDLERS (ADR-0028, ADR-0033)
@@ -155,4 +187,23 @@ async def root():
         "health": "/api/health",
     }
     return ApiResponse.create(data=data)
+
+
+# -----------------------------------------------------------------------------
+# Dependency Providers for Lifespan-Managed Egress
+# -----------------------------------------------------------------------------
+
+def get_audited_http_client(request: Request):
+    """FastAPI dependency resolving the lifespan-managed AuditedHttpClient."""
+    from app.core.egress import get_default_audited_client
+    if hasattr(request.app.state, "audited_http_client"):
+        return request.app.state.audited_http_client
+    return get_default_audited_client()
+
+
+def get_whatsapp_adapter(request: Request):
+    """FastAPI dependency resolving WhatsAppBSPPort with lifespan-managed connection pool."""
+    from app.adapters.whatsapp import get_whatsapp_bsp_adapter
+    client = get_audited_http_client(request)
+    return get_whatsapp_bsp_adapter(http_client=client)
 

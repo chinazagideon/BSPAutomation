@@ -48,15 +48,38 @@ def extract_commercial_entities(text: str) -> Dict[str, Any]:
     return entities
 
 
-def fast_path_classify(text: str) -> Optional[ClassificationOutput]:
+def fast_path_classify(
+    text: str,
+    custom_dictionary: Optional[list] = None,
+) -> Optional[ClassificationOutput]:
     """
     Stage 1 Classifier: Matches deterministic commercial phrases with sub-millisecond execution.
+    Checks merchant custom dictionary first, then falls back to static Nigerian slang regexes.
     Returns ClassificationOutput if confidence >= threshold, or None.
     """
     start_time = time.perf_counter()
     lower = text.lower().strip()
     entities = extract_commercial_entities(text)
     dialect = "Nigerian Pidgin" if re.search(r"\b(don|dey|wetin|abeg|oya|fit|sef)\b", lower) else "Commercial Slang"
+
+    # 0. Merchant-Specific Custom Fast-Path Dictionary
+    if custom_dictionary:
+        for rule in custom_dictionary:
+            phrase = (rule.get("phrase_pattern") or "").lower().strip()
+            if phrase and phrase in lower:
+                latency = (time.perf_counter() - start_time) * 1000.0
+                return ClassificationOutput(
+                    intent=rule.get("intent", "CUSTOM_MERCHANT_INTENT"),
+                    lead_tier=rule.get("lead_tier", "WARM"),
+                    urgency_score=rule.get("urgency_score", 7),
+                    confidence=0.98,
+                    detected_dialect=dialect,
+                    suggested_reply=rule.get("suggested_response_template", "Thank you! We received your custom request."),
+                    action=rule.get("action", "EXECUTE_CUSTOM_FAST_PATH_WORKFLOW"),
+                    extracted_entities=entities,
+                    tokens_consumed=0,
+                    latency_ms=max(1.0, latency),
+                )
 
     # 1. Payment Transfer Confirmation (High-intent hot lead)
     if re.search(r"(?:i\s*don\s*pay|done\s*transfer|i\s*sent\s*the\s*money|alert\s*don\s*enter|see\s*debit\s*alert|receipt\s*dey|transfer\s*successful|paid|i\s*have\s*paid)", lower):

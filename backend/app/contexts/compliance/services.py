@@ -96,7 +96,7 @@ class ComplianceService:
         last_event_query = await session.execute(
             select(ConsentEvent)
             .where(ConsentEvent.merchant_id == merchant_id)
-            .order_by(desc(ConsentEvent.created_at))
+            .order_by(desc(ConsentEvent.event_timestamp))
             .limit(1)
         )
         last_event = last_event_query.scalar_one_or_none()
@@ -107,14 +107,16 @@ class ComplianceService:
         digest_input = f"{prev_hash}|{request.customer_phone}|{request.action}|{iso_time}"
         immutable_hash = compute_sha256_hash(digest_input)
 
+        db_action = "OPT_OUT_REVOCATION" if "OPT_OUT" in request.action or request.action == "EXPLICIT_REVOCATION" else "OPT_IN_MARKETING"
+
         event = ConsentEvent(
             merchant_id=merchant_id,
-            customer_phone=request.customer_phone,
-            action=request.action,
-            channel=request.channel,
+            phone=request.customer_phone,
+            action=db_action,
+            raw_keyword=request.action,
             previous_event_hash=prev_hash,
             immutable_hash=immutable_hash,
-            created_at=now,
+            event_timestamp=now,
         )
         session.add(event)
         await session.flush()

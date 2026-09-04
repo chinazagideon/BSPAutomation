@@ -25,15 +25,38 @@ class CascadingNLUPipeline:
         customer_name: str = "Tunde Adeleke",
         previous_context: Optional[List[str]] = None,
         merchant_name: str = "Enterprise SME Store",
+        custom_dictionary: Optional[List[dict]] = None,
+        catalog_manifest: Optional[str] = None,
+        provider_context: Optional[dict] = None,
     ) -> NLUClassificationResponse:
         pipeline_start = time.perf_counter()
         previous_context = previous_context or []
 
         # =========================================================================
-        # STAGE 1: Fast-Path Deterministic Matcher
+        # STAGE 0: Voice Note Passthrough & Graceful Desk Handoff (ADR-0037)
+        # =========================================================================
+        if text.startswith("[VOICE_NOTE_MEDIA_ID:"):
+            total_latency = (time.perf_counter() - pipeline_start) * 1000.0
+            return NLUClassificationResponse(
+                routing_source="FAST_PATH",
+                intent="VOICE_NOTE_RECEIVED",
+                lead_tier="WARM",
+                urgency_score=7,
+                confidence=1.0,
+                detected_dialect="Nigerian Pidgin",
+                suggested_reply="We receive your voice note! Our human support team go listen am shortly. If you dey hurry, you fit type your request here.",
+                action="DISPATCH_AGENT_HANDOFF",
+                extracted_entities={"voice_note": True, "raw_tag": text},
+                latency_ms=round(total_latency, 2),
+                tokens_consumed=0,
+                estimated_kobo_saved=52000,
+            )
+
+        # =========================================================================
+        # STAGE 1: Fast-Path Deterministic Matcher (ADR-0024 & DB-Driven Dict)
         # =========================================================================
         if settings.USE_FAST_PATH:
-            fast_path_result = fast_path_classify(text)
+            fast_path_result = fast_path_classify(text, custom_dictionary=custom_dictionary)
             if fast_path_result and fast_path_result.confidence >= settings.FAST_PATH_CONFIDENCE_THRESHOLD:
                 total_latency = (time.perf_counter() - pipeline_start) * 1000.0
                 return NLUClassificationResponse(
@@ -89,20 +112,41 @@ class CascadingNLUPipeline:
                 )
 
         # =========================================================================
-        # STAGE 3: Third-Party LLM Escalation (Google Gemini 3.7 Flash)
+        # STAGE 3: Third-Party LLM Escalation (Gemini 3.7 Flash + Manifest Injection ADR-0035)
         # =========================================================================
         if settings.USE_LLM_ESCALATION:
             llm_adapter = get_llm_provider_adapter()
-            prompt = (
-                f"Customer Name: {customer_name}\n"
-                f"Customer Phone: {customer_phone}\n"
-                f"Message: {text}\n"
-                f"Previous Context: {previous_context[-3:] if previous_context else []}"
-            )
-            system_instruction = (
-                "You are an enterprise conversational AI for a Nigerian SME. "
-                "Classify intent, lead tier, urgency, and generate a tone-matched Nigerian Pidgin or English reply."
-            )
+            prompt_lines = [
+                f"Customer Name: {customer_name}",
+                f"Customer Phone: {customer_phone}",
+                f"Message: {text}",
+            ]
+            if previous_context:
+                prompt_lines.append("Previous Recent Messages:\n" + "\n".join(f"- {m}" for m in previous_context[-5:]))
+            prompt = "\n".join(prompt_lines)
+
+            system_instruction_parts = [
+                f"You are an enterprise conversational AI for '{merchant_name}', a Nigerian SME.",
+                "Classify intent, lead tier (HOT, WARM, COLD), urgency score (1-10), and generate a tone-matched Nigerian Pidgin or English reply.",
+            ]
+            if provider_context:
+                waba_name = provider_context.get("verified_business_name", merchant_name)
+                hours = provider_context.get("operating_hours", "Mon-Sat: 8:00 AM - 6:00 PM WAT")
+                coverage = provider_context.get("delivery_coverage", "Lagos Mainland, Lekki, Ikeja, Abuja")
+                catalog_id = provider_context.get("meta_catalog_id", "N/A")
+                system_instruction_parts.append(
+                    f"\n### Verified Meta WABA Provider Context:\n"
+                    f"- Verified Merchant: {waba_name}\n"
+                    f"- Operating Hours: {hours}\n"
+                    f"- Delivery Coverage: {coverage}\n"
+                    f"- Linked Meta Catalog: {catalog_id}"
+                )
+            if catalog_manifest:
+                system_instruction_parts.append(
+                    f"\n### Merchant Product Catalog & Price Manifest:\n{catalog_manifest}"
+                )
+
+            system_instruction = "\n".join(system_instruction_parts)
             llm_result = await llm_adapter.generate_chat_completion(prompt, system_instruction)
             total_latency = (time.perf_counter() - pipeline_start) * 1000.0
 

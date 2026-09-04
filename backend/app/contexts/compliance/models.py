@@ -26,12 +26,34 @@ class ConsentEvent(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), nullable=False)
-    customer_phone = Column(String(32), nullable=False)
-    action = Column(String(32), nullable=False)  # OPT_IN, OPT_OUT_STOP, OPT_OUT_COMOT, EXPLICIT_REVOCATION
-    channel = Column(String(32), nullable=False, default="WHATSAPP")
-    previous_event_hash = Column(CHAR(64), nullable=True)
-    immutable_hash = Column(CHAR(64), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    phone = Column("phone", String(32), nullable=False)
+    action = Column(String(32), nullable=False)  # OPT_IN_MARKETING, OPT_IN_TRANSACTIONAL, OPT_IN_DATA_PROCESSING, OPT_OUT_REVOCATION
+    ip_address = Column(String(45), nullable=False, default="127.0.0.1")
+    network_carrier = Column(String(64), nullable=False, default="MTN Nigeria")
+    raw_keyword = Column(String(32), nullable=True)
+    previous_event_hash = Column(String(64), nullable=False, default="0" * 64)
+    immutable_hash = Column(String(64), nullable=False)
+    event_timestamp = Column("event_timestamp", DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    @property
+    def customer_phone(self) -> str:
+        return self.phone
+
+    @customer_phone.setter
+    def customer_phone(self, val: str) -> None:
+        self.phone = val
+
+    @property
+    def channel(self) -> str:
+        return "WHATSAPP"
+
+    @property
+    def created_at(self) -> datetime:
+        return self.event_timestamp
+
+    @created_at.setter
+    def created_at(self, val: datetime) -> None:
+        self.event_timestamp = val
 
 
 class PiiRedactionAudit(Base):

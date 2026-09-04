@@ -81,6 +81,35 @@ class Settings(BaseSettings):
     META_CLOUD_API_TOKEN: str = ""
     META_PHONE_NUMBER_ID: str = ""
     META_WEBHOOK_VERIFY_TOKEN: str = "enterprise_whatsapp_secret_webhook_token"
+    META_APP_SECRET: str = "dev_meta_app_secret_placeholder"
+
+    # Termii SMS Rail (Manager Outage Alerts & Fallback)
+    TERMII_API_KEY: str = ""
+    TERMII_BASE_URL: str = "https://api.ng.termii.com/api"
+    TERMII_SENDER_ID: str = "SME-ALERT"
+
+    # Timeouts & Cache TTLs
+    DESK_HEARTBEAT_TIMEOUT_SECONDS: int = 60
+    CATALOG_MANIFEST_TTL_SECONDS: int = 3600
+    PROVIDER_CONTEXT_TTL_SECONDS: int = 3600
+
+    # HTTP Connection Pool & Egress Limits
+    HTTP_POOL_MAX_CONNECTIONS: int = 100
+    HTTP_POOL_MAX_KEEPALIVE_CONNECTIONS: int = 25
+    HTTP_POOL_KEEPALIVE_EXPIRY_SECONDS: float = 30.0
+    HTTP_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    HTTP_READ_TIMEOUT_SECONDS: float = 15.0
+    HTTP_WRITE_TIMEOUT_SECONDS: float = 5.0
+    HTTP_POOL_TIMEOUT_SECONDS: float = 5.0
+
+    # -------------------------------------------------------------
+    # OPENTELEMETRY & STRUCTURED LOGGING TELEMETRY
+    # -------------------------------------------------------------
+    OTEL_ENABLED: bool = True
+    OTEL_SERVICE_NAME: str = "bsp-whatsapp-backend"
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+    OTEL_SAMPLING_RATIO: float = 1.0  # 1.0 in dev/test/staging; override via env in prod
+    LOG_LEVEL: str = "INFO"
 
 
 settings = Settings()

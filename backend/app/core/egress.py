@@ -7,9 +7,13 @@ from typing import TypeVar, Type, Optional, Dict, Any, Union
 from pydantic import BaseModel, ValidationError
 import httpx
 
+from app.core.config import settings
 from app.core.trace import get_trace_id, get_context_merchant_id
 from app.core.security import compute_sha256_hash
 from app.core.events import event_bus, DomainEvent
+from app.core.telemetry import get_tracer, inject_trace_context
+from app.core.logging import get_logger
+from opentelemetry.trace import StatusCode, SpanKind
 from app.core.exceptions import (
     DomainGatewayException,
     PaymentGatewayDeclinedException,
@@ -18,6 +22,8 @@ from app.core.exceptions import (
     WhatsAppDeliveryFailedException,
     ProviderSchemaMismatchException,
 )
+
+logger = get_logger("egress.client")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -75,16 +81,38 @@ class EgressAuditEvent(DomainEvent):
     is_success: bool
 
 
+def create_pooled_http_client() -> httpx.AsyncClient:
+    """
+    Factory creating a persistent, production-grade httpx.AsyncClient connection pool.
+    Enforces keep-alive limits and granular connect/read/write/pool timeouts from Settings.
+    """
+    limits = httpx.Limits(
+        max_connections=settings.HTTP_POOL_MAX_CONNECTIONS,
+        max_keepalive_connections=settings.HTTP_POOL_MAX_KEEPALIVE_CONNECTIONS,
+        keepalive_expiry=settings.HTTP_POOL_KEEPALIVE_EXPIRY_SECONDS,
+    )
+    timeout = httpx.Timeout(
+        connect=settings.HTTP_CONNECT_TIMEOUT_SECONDS,
+        read=settings.HTTP_READ_TIMEOUT_SECONDS,
+        write=settings.HTTP_WRITE_TIMEOUT_SECONDS,
+        pool=settings.HTTP_POOL_TIMEOUT_SECONDS,
+    )
+    return httpx.AsyncClient(limits=limits, timeout=timeout)
+
+
 class AuditedHttpClient:
     """
     Centralized HTTP Client Transport Interceptor.
     Enforces wire-level audit logging, secret masking, SHA-256 payload digests,
     and typed DTO hydration as an Anti-Corruption Layer (ACL).
+    Strictly requires a managed, pooled httpx.AsyncClient instance.
     """
 
-    def __init__(self, client: Optional[httpx.AsyncClient] = None, timeout: float = 15.0):
-        self._custom_client = client
-        self.timeout = timeout
+    def __init__(self, client: httpx.AsyncClient, timeout: Optional[float] = None):
+        if not isinstance(client, httpx.AsyncClient):
+            raise TypeError("AuditedHttpClient strictly requires an explicit, managed httpx.AsyncClient instance")
+        self._client = client
+        self.timeout = timeout or settings.HTTP_READ_TIMEOUT_SECONDS
 
     async def request(
         self,
@@ -101,7 +129,7 @@ class AuditedHttpClient:
         Executes an audited outbound HTTP request:
         1. Injects active trace_id and masks auth headers
         2. Sanitizes request body & computes request_sha256
-        3. Executes wire HTTP call & measures network latency
+        3. Executes wire HTTP call via persistent connection pool & measures network latency
         4. Sanitizes response body & computes response_sha256
         5. Emits EgressAuditEvent to EventBus
         6. On Error (4xx/5xx): Raises typed domain exception
@@ -116,19 +144,31 @@ class AuditedHttpClient:
         request_sha256 = compute_sha256_hash(redacted_request_str)
         masked_headers = mask_sensitive_headers(headers)
 
-        # Inject Trace Headers
-        outbound_headers = dict(headers or {})
-        outbound_headers["X-Trace-ID"] = active_trace_id
+        tracer = get_tracer("bsp-egress")
+        with tracer.start_as_current_span(f"http.client:{target_service}", kind=SpanKind.CLIENT) as client_span:
+            client_span.set_attribute("http.method", method)
+            client_span.set_attribute("http.url", url)
+            client_span.set_attribute("bsp.target_service", target_service)
+            client_span.set_attribute("bsp.merchant_id", active_merchant_id)
+            client_span.set_attribute("bsp.request_sha256", request_sha256)
 
-        start_time = time.perf_counter()
-        raw_response_text = ""
-        status_code = 500
-        is_success = False
+            # Tiered payload capture in span (sanitized in dev/test/staging, metadata only in prod)
+            if settings.ENVIRONMENT in ["development", "staging", "test"]:
+                client_span.set_attribute("bsp.request_body_redacted", redacted_request_str[:1024])
 
-        try:
-            # Use injected client or create dedicated async client session
-            if self._custom_client:
-                response = await self._custom_client.request(
+            # Inject Trace Headers (W3C traceparent + legacy X-Trace-ID)
+            outbound_headers = dict(headers or {})
+            inject_trace_context(outbound_headers)
+            outbound_headers["X-Trace-ID"] = active_trace_id
+
+            start_time = time.perf_counter()
+            raw_response_text = ""
+            status_code = 500
+            is_success = False
+
+            try:
+                # Exclusively execute through the managed persistent client pool
+                response = await self._client.request(
                     method=method,
                     url=url,
                     json=body_dict,
@@ -136,22 +176,75 @@ class AuditedHttpClient:
                     params=params,
                     timeout=self.timeout,
                 )
-            else:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.request(
-                        method=method,
-                        url=url,
-                        json=body_dict,
-                        headers=outbound_headers,
-                        params=params,
-                    )
 
-            status_code = response.status_code
-            raw_response_text = response.text
-            is_success = 200 <= status_code < 300
+                status_code = response.status_code
+                raw_response_text = response.text
+                is_success = 200 <= status_code < 300
 
-        except httpx.TimeoutException as exc:
+            except httpx.TimeoutException as exc:
+                latency_ms = (time.perf_counter() - start_time) * 1000.0
+                client_span.record_exception(exc)
+                client_span.set_status(StatusCode.ERROR, "Gateway Timeout")
+                await self._emit_audit(
+                    merchant_id=active_merchant_id,
+                    trace_id=active_trace_id,
+                    target_service=target_service,
+                    method=method,
+                    url=url,
+                    masked_headers=masked_headers,
+                    request_body=redacted_request_str,
+                    request_sha256=request_sha256,
+                    status_code=504,
+                    response_body="[GATEWAY_TIMEOUT]",
+                    response_sha256=compute_sha256_hash("[GATEWAY_TIMEOUT]"),
+                    latency_ms=latency_ms,
+                    is_success=False,
+                )
+                raise PaymentGatewayTimeoutException(
+                    message=f"Timeout connecting to {target_service} at {url}",
+                    provider=target_service,
+                    status_code=504,
+                ) from exc
+
+            except Exception as exc:
+                latency_ms = (time.perf_counter() - start_time) * 1000.0
+                client_span.record_exception(exc)
+                client_span.set_status(StatusCode.ERROR, str(exc))
+                await self._emit_audit(
+                    merchant_id=active_merchant_id,
+                    trace_id=active_trace_id,
+                    target_service=target_service,
+                    method=method,
+                    url=url,
+                    masked_headers=masked_headers,
+                    request_body=redacted_request_str,
+                    request_sha256=request_sha256,
+                    status_code=500,
+                    response_body=f"[TRANSPORT_ERROR: {str(exc)}]",
+                    response_sha256=compute_sha256_hash(str(exc)),
+                    latency_ms=latency_ms,
+                    is_success=False,
+                )
+                raise DomainGatewayException(
+                    message=f"Transport connection failure to {target_service}: {str(exc)}",
+                    provider=target_service,
+                    status_code=500,
+                ) from exc
+
+            # Calculate latency and sanitize response
             latency_ms = (time.perf_counter() - start_time) * 1000.0
+            redacted_response_str = sanitize_wire_payload(raw_response_text)
+            response_sha256 = compute_sha256_hash(redacted_response_str)
+
+            client_span.set_attribute("http.status_code", status_code)
+            client_span.set_attribute("bsp.response_sha256", response_sha256)
+            if settings.ENVIRONMENT in ["development", "staging", "test"]:
+                client_span.set_attribute("bsp.response_body_redacted", redacted_response_str[:1024])
+
+            if not is_success:
+                client_span.set_status(StatusCode.ERROR, f"HTTP {status_code}")
+
+            # Emit Asynchronous Audit Record to EventBus
             await self._emit_audit(
                 merchant_id=active_merchant_id,
                 trace_id=active_trace_id,
@@ -161,78 +254,28 @@ class AuditedHttpClient:
                 masked_headers=masked_headers,
                 request_body=redacted_request_str,
                 request_sha256=request_sha256,
-                status_code=504,
-                response_body="[GATEWAY_TIMEOUT]",
-                response_sha256=compute_sha256_hash("[GATEWAY_TIMEOUT]"),
-                latency_ms=latency_ms,
-                is_success=False,
-            )
-            raise PaymentGatewayTimeoutException(
-                message=f"Timeout connecting to {target_service} at {url}",
-                provider=target_service,
-                status_code=504,
-            ) from exc
-
-        except Exception as exc:
-            latency_ms = (time.perf_counter() - start_time) * 1000.0
-            await self._emit_audit(
-                merchant_id=active_merchant_id,
-                trace_id=active_trace_id,
-                target_service=target_service,
-                method=method,
-                url=url,
-                masked_headers=masked_headers,
-                request_body=redacted_request_str,
-                request_sha256=request_sha256,
-                status_code=500,
-                response_body=f"[TRANSPORT_ERROR: {str(exc)}]",
-                response_sha256=compute_sha256_hash(str(exc)),
-                latency_ms=latency_ms,
-                is_success=False,
-            )
-            raise DomainGatewayException(
-                message=f"Transport connection failure to {target_service}: {str(exc)}",
-                provider=target_service,
-                status_code=500,
-            ) from exc
-
-        # Calculate latency and sanitize response
-        latency_ms = (time.perf_counter() - start_time) * 1000.0
-        redacted_response_str = sanitize_wire_payload(raw_response_text)
-        response_sha256 = compute_sha256_hash(redacted_response_str)
-
-        # Emit Asynchronous Audit Record to EventBus
-        await self._emit_audit(
-            merchant_id=active_merchant_id,
-            trace_id=active_trace_id,
-            target_service=target_service,
-            method=method,
-            url=url,
-            masked_headers=masked_headers,
-            request_body=redacted_request_str,
-            request_sha256=request_sha256,
-            status_code=status_code,
-            response_body=redacted_response_str,
-            response_sha256=response_sha256,
-            latency_ms=latency_ms,
-            is_success=is_success,
-        )
-
-        # Handle 4xx / 5xx Gateway Errors -> Throw Typed Domain Exceptions
-        if not is_success:
-            self._handle_gateway_error(target_service, status_code, raw_response_text)
-
-        # Parse JSON and hydrate Typed Response DTO (Anti-Corruption Layer)
-        try:
-            raw_json = json.loads(raw_response_text) if raw_response_text else {}
-            return response_dto.model_validate(raw_json)
-        except (json.JSONDecodeError, ValidationError) as err:
-            raise ProviderSchemaMismatchException(
-                message=f"Response from {target_service} violated expected DTO contract {response_dto.__name__}: {str(err)}",
-                provider=target_service,
                 status_code=status_code,
-                raw_error={"raw_response": raw_response_text},
-            ) from err
+                response_body=redacted_response_str,
+                response_sha256=response_sha256,
+                latency_ms=latency_ms,
+                is_success=is_success,
+            )
+
+            # Handle 4xx / 5xx Gateway Errors -> Throw Typed Domain Exceptions
+            if not is_success:
+                self._handle_gateway_error(target_service, status_code, raw_response_text)
+
+            # Parse JSON and hydrate Typed Response DTO (Anti-Corruption Layer)
+            try:
+                raw_json = json.loads(raw_response_text) if raw_response_text else {}
+                return response_dto.model_validate(raw_json)
+            except (json.JSONDecodeError, ValidationError) as err:
+                raise ProviderSchemaMismatchException(
+                    message=f"Response from {target_service} violated expected DTO contract {response_dto.__name__}: {str(err)}",
+                    provider=target_service,
+                    status_code=status_code,
+                    raw_error={"raw_response": raw_response_text},
+                ) from err
 
     async def _emit_audit(
         self,
@@ -316,5 +359,24 @@ class AuditedHttpClient:
         )
 
 
-# Global Default Audited HTTP Client instance
-audited_http_client = AuditedHttpClient()
+_LIFESPAN_AUDITED_CLIENT: Optional[AuditedHttpClient] = None
+
+
+def set_default_audited_client(client: AuditedHttpClient) -> None:
+    """Registers the active lifespan-managed AuditedHttpClient."""
+    global _LIFESPAN_AUDITED_CLIENT
+    _LIFESPAN_AUDITED_CLIENT = client
+
+
+def get_default_audited_client() -> AuditedHttpClient:
+    """
+    Resolves the active lifespan-managed AuditedHttpClient.
+    Fails fast if the application lifespan context has not been initialized.
+    """
+    global _LIFESPAN_AUDITED_CLIENT
+    if _LIFESPAN_AUDITED_CLIENT is None:
+        raise RuntimeError(
+            "Managed AuditedHttpClient has not been initialized in application lifespan. "
+            "Ensure the FastAPI lifespan or ARQ WorkerSettings.on_startup has executed."
+        )
+    return _LIFESPAN_AUDITED_CLIENT

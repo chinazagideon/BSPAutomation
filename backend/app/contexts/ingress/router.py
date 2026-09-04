@@ -32,21 +32,56 @@ async def verify_whatsapp_webhook_challenge(request: Request):
 
 
 @router.post("/webhooks/whatsapp", status_code=status.HTTP_200_OK)
-async def receive_whatsapp_webhook(
-    payload: Dict[str, Any],
-    tenant: TenantContext = Depends(get_current_tenant),
-    db: AsyncSession = Depends(get_tenant_db),
-):
+async def receive_whatsapp_webhook(request: Request):
     """
     Ingress Webhook Receiver: Delivers sub-25ms 200 OK acknowledgement to Meta Cloud / Termii.
-    Persists raw webhook event and offloads processing to the background worker pool (ADR-0033 Fast-ACK).
+    Validates X-Hub-Signature-256 HMAC, resolves tenant via phone number cache,
+    persists raw webhook event, and offloads processing to ARQ Redis (ADR-0034 Fast-ACK).
     """
-    return await IngressService.ingest_webhook_fast_ack(
-        session=db,
-        merchant_id=UUID(tenant.merchant_id),
-        payload=payload,
-        provider=settings.WHATSAPP_BSP_PROVIDER,
-    )
+    import json
+    from app.core.security import verify_meta_webhook_signature
+    from app.core.tenant import resolve_merchant_from_phone
+    from app.core.database import tenant_session_scope
+
+    raw_body = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256") or request.headers.get("x-hub-signature-256")
+
+    # 1. Cryptographic HMAC Signature Verification (ADR-0034)
+    is_valid_sig = True
+    if signature:
+        is_valid_sig = verify_meta_webhook_signature(raw_body, signature, settings.META_APP_SECRET)
+        if not is_valid_sig:
+            raise HTTPException(status_code=403, detail="Invalid X-Hub-Signature-256 HMAC signature")
+    elif settings.ENVIRONMENT in ["production", "staging"]:
+        raise HTTPException(status_code=403, detail="Missing X-Hub-Signature-256 header")
+
+    # 2. Parse JSON body
+    try:
+        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # 3. Two-Tier Cached Webhook Tenant Resolution (ADR-0031)
+    phone_number_id = IngressService.extract_phone_number_id(payload)
+    merchant_id_str = await resolve_merchant_from_phone(phone_number_id) if phone_number_id else None
+
+    # Unknown phone ID fallback: acknowledge 200 OK to prevent Meta retry storms (Q12)
+    if not merchant_id_str:
+        return {
+            "status": "IGNORED_UNKNOWN_TENANT",
+            "phone_number_id": phone_number_id,
+            "signature_verified": is_valid_sig,
+        }
+
+    # 4. Scoped RLS Audit Persistence & ARQ Redis Queueing
+    async with tenant_session_scope(merchant_id_str) as session:
+        return await IngressService.ingest_webhook_fast_ack(
+            session=session,
+            merchant_id=UUID(merchant_id_str),
+            payload=payload,
+            provider=settings.WHATSAPP_BSP_PROVIDER,
+            signature_verified=is_valid_sig,
+        )
 
 
 @router.post("/classify", response_model=ApiResponse[NLUClassificationResponse])

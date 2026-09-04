@@ -17,25 +17,46 @@ from app.core.exceptions import DomainGatewayException
 from app.core.response import ApiErrorResponse
 
 
+import structlog
+from app.core.telemetry import inject_trace_context, get_active_trace_id
+
+
 # -----------------------------------------------------------------------------
 # 1. DISTRIBUTED TRACE CONTEXT MIDDLEWARE (ADR-0028)
 # -----------------------------------------------------------------------------
 class TraceContextMiddleware(BaseHTTPMiddleware):
     """
-    Extracts or generates an immutable distributed trace identifier (UUIDv7/UUID4),
-    injects it into async contextvars, and appends it to all downstream response headers.
+    Extracts or generates an immutable distributed trace identifier (W3C/UUIDv7/UUID4),
+    synchronizes with OpenTelemetry active span context and async contextvars,
+    binds to structlog context, and appends X-Trace-ID and traceparent to response headers.
     """
     async def dispatch(self, request: Request, call_next):
+        # 1. Extract W3C traceparent or custom trace headers
+        w3c_traceparent = request.headers.get("traceparent")
         trace_id = (
             request.headers.get("X-Trace-ID") or
             request.headers.get("X-Request-ID") or
+            get_active_trace_id() or
             str(uuid.uuid4())
         )
         set_trace_id(trace_id)
+        structlog.contextvars.bind_contextvars(trace_id=trace_id)
 
         response: Response = await call_next(request)
-        response.headers["X-Trace-ID"] = trace_id
-        response.headers["X-Request-ID"] = trace_id
+
+        active_otel_id = get_active_trace_id()
+        final_trace_id = active_otel_id or trace_id
+        response.headers["X-Trace-ID"] = final_trace_id
+        response.headers["X-Request-ID"] = final_trace_id
+
+        # Inject W3C traceparent header if available
+        carrier: Dict[str, str] = {}
+        inject_trace_context(carrier)
+        if "traceparent" in carrier:
+            response.headers["traceparent"] = carrier["traceparent"]
+        elif w3c_traceparent:
+            response.headers["traceparent"] = w3c_traceparent
+
         return response
 
 
