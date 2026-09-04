@@ -148,15 +148,6 @@ class FastPathDictionary(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
-class AIWallet(Base):
-    """Merchant prepaid AI token wallet tracking consumption and cost savings in Kobo."""
-    __tablename__ = "ai_wallets"
-    __table_args__ = {"schema": "ingress"}
+# AIWallet is centralized under core schema per ADR-0039 & ADR-0040
+from app.contexts.core.models import AIWallet
 
-    merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), primary_key=True)
-    balance_kobo = Column(BigInteger, nullable=False, default=500000)  # ₦5,000.00
-    bundled_tokens_remaining = Column(Integer, nullable=False, default=50000)
-    total_tokens_consumed = Column(Integer, nullable=False, default=0)
-    total_naira_saved = Column(BigInteger, nullable=False, default=0)
-    is_active = Column(Boolean, nullable=False, default=True)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

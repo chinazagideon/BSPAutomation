@@ -45,6 +45,26 @@ def extract_commercial_entities(text: str) -> Dict[str, Any]:
         except ValueError:
             pass
 
+    # 4. Product / Commodity Extraction
+    product_patterns = [
+        r"\b(?:bags?|cartons?|packs?|crates?|doz(?:en)?)\s+(?:of\s+)?([a-zA-Z\s]{3,30}?)(?:\s+(?:for|to|deliver|drop)|$)",
+        r"\b(?:want|need|order|buy)\s+(?:\d+\s+)?(?:bags?|cartons?|packs?|units?|pieces?|crates?)?\s*(?:of\s+)?([a-zA-Z\s]{3,30}?)(?:\s+(?:for|to|deliver|drop)|$)",
+        r"\b(sugar|rice|flour|beans|oil|spaghetti|noodles|indomie|cement|milk|garri|salt)\b",
+    ]
+    for pat in product_patterns:
+        m = re.search(pat, lower)
+        if m:
+            candidate_p = m.group(1).strip()
+            if candidate_p not in ["to", "for", "am", "dey", "now", "today", "please", "abeg"]:
+                entities["product"] = candidate_p
+                break
+
+    # 5. Fulfillment Type Extraction
+    if re.search(r"\b(pickup|pick\s*up|collect|warehouse|come\s*carry)\b", lower):
+        entities["fulfillment_type"] = "WAREHOUSE_PICKUP"
+    elif re.search(r"\b(deliver|dispatch|waybill|drop\s*am|send\s*am\s*to)\b", lower):
+        entities["fulfillment_type"] = "EXPRESS_DELIVERY"
+
     return entities
 
 
@@ -97,19 +117,33 @@ def fast_path_classify(
             latency_ms=max(1.5, latency),
         )
 
-    # 2. Instant Order / Checkout Intent
-    if re.search(r"(?:i\s*wan\s*buy|i\s*wan\s*order|send\s*account\s*details|how\s*i\s*go\s*pay|pack\s*\d+|deliver\s*to|drop\s*am\s*for|i\s*need\s*\d+|give\s*me\s*\d+)", lower):
+    # 2. Explicit Negotiation Cancellation
+    if re.search(r"\b(cancel(?:\s+am|\s+order|\s+it)?|never\s*mind|no\s*buy\s*again|i\s*no\s*(?:wan|dey)\s*buy|forget\s*(?:am|it)|abort|drop\s*am)\b", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        loc = entities.get("location", "")
-        loc_str = f" for delivery to {loc}" if loc else ""
+        return ClassificationOutput(
+            intent="CANCEL_ORDER",
+            lead_tier="COLD",
+            urgency_score=5,
+            confidence=0.98,
+            detected_dialect=dialect,
+            suggested_reply="No wahala! We don clear your pending order. Let us know anytime you're ready to order again.",
+            action="CANCEL_NEGOTIATION_FRAME",
+            extracted_entities=entities,
+            tokens_consumed=0,
+            latency_ms=max(1.0, latency),
+        )
+
+    # 3. Instant Order / Checkout Intent (Delegated to LocalToolDispatcher per ADR-0043)
+    if re.search(r"(?:i\s*wan\s*buy|i\s*wan\s*order|send\s*account\s*details|how\s*i\s*go\s*pay|pack\s*\d+|deliver\s*to|drop\s*am\s*for|i\s*need\s*\d+|give\s*me\s*\d+|i\s*want\s*\d+|buy\s*\d+)", lower):
+        latency = (time.perf_counter() - start_time) * 1000.0
         return ClassificationOutput(
             intent="INSTANT_CHECKOUT_ORDER",
             lead_tier="HOT",
             urgency_score=9,
             confidence=0.95,
             detected_dialect=dialect,
-            suggested_reply=f"Sharp! I have reserved your item order{loc_str}. We don lock your cart for 10 minutes anti-ghosting hold.\n\n🏦 *Payment Details (Dedicated Virtual NUBAN):*\nBank: *Moniepoint MFB*\nAccount Name: *Enterprise SME Store*\nAccount Number: *9031842901*\n\nOnce transfer clear, receipt go land here instantly!",
-            action="GENERATE_VIRTUAL_NUBAN_HOLD",
+            suggested_reply=None,  # Delegated to LocalToolDispatcher for schema-governed clarification
+            action="DISPATCH_LOCAL_TOOL",
             extracted_entities=entities,
             tokens_consumed=0,
             latency_ms=max(1.5, latency),

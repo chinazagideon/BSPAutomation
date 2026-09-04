@@ -25,6 +25,7 @@ from app.contexts.ledger.router import router as ledger_router
 from app.contexts.reservations.router import router as reservations_router
 from app.contexts.desk.router import router as desk_router
 from app.contexts.compliance.router import router as compliance_router
+from app.contexts.knowledge.router import router as knowledge_router
 
 
 @asynccontextmanager
@@ -58,6 +59,16 @@ async def lifespan(app: FastAPI):
         print(f"[{settings.APP_NAME}] PostgreSQL Database connected successfully.")
     else:
         print(f"[{settings.APP_NAME}] PostgreSQL Database not reachable at {settings.DATABASE_URL}. (Using mock mode for tests/dev)")
+
+    # 3. Register Context Providers with IoC ProviderRegistry (ADR-0041)
+    from app.core.generation import ProviderRegistry
+    from app.contexts.knowledge.providers import KnowledgeSliceProvider
+    from app.contexts.ingress.providers import CustomerHistorySliceProvider
+    from app.contexts.desk.providers import DeskStateSliceProvider
+
+    ProviderRegistry.register(KnowledgeSliceProvider())
+    ProviderRegistry.register(CustomerHistorySliceProvider())
+    ProviderRegistry.register(DeskStateSliceProvider())
 
     yield
 
@@ -157,6 +168,7 @@ app.include_router(ledger_router, prefix=settings.API_V1_PREFIX)
 app.include_router(reservations_router, prefix=settings.API_V1_PREFIX)
 app.include_router(desk_router, prefix=settings.API_V1_PREFIX)
 app.include_router(compliance_router, prefix=settings.API_V1_PREFIX)
+app.include_router(knowledge_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/api/health", tags=["Health"], response_model=ApiResponse[dict])

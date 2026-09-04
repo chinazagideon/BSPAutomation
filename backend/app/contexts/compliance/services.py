@@ -58,7 +58,7 @@ def sanitize_nigerian_pii_detailed(text: str) -> Tuple[str, List[RedactedEntity]
         sanitized = sanitized.replace(f"{prefix}{nin}", f"{prefix}{token}")
 
     # 4. Explicit NUBAN Account (10 digits)
-    nuban_pattern = r"\b((?:my\s+)?(?:account|acct|nuban|bank\s*account)\s*(?:is|be|dey|:=|:|=|-|#)?\s*)(\d{10})\b"
+    nuban_pattern = r"\b((?:my\s+)?(?:account(?:\s*number|\s*no|\s*num)?|acct(?:\s*number|\s*no|\s*num)?|nuban|bank\s*account(?:\s*number|\s*no)?)\s*(?:is|be|dey|:=|:|=|-|#)?\s*)(\d{10})\b"
     for match in re.finditer(nuban_pattern, sanitized, flags=re.IGNORECASE):
         prefix = match.group(1)
         acct = match.group(2)

@@ -309,7 +309,8 @@ class IngressService:
                     else:
                         cost_kobo = (response.tokens_consumed * 10)  # Approximate token pricing in Kobo
                         wallet.balance_kobo = max(0, wallet.balance_kobo - cost_kobo)
+                        wallet.total_kobo_spent += cost_kobo
                 if response.estimated_kobo_saved > 0:
-                    wallet.total_naira_saved += response.estimated_kobo_saved
+                    wallet.estimated_kobo_saved += response.estimated_kobo_saved
 
         return response

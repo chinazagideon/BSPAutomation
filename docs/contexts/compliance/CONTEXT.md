@@ -44,3 +44,8 @@ _Avoid_: Request ID, transaction tag
 The architectural rule requiring the exact raw HTTP payload transmitted over the wire (PII-redacted and SHA-256 hashed) to be logged for regulatory non-repudiation before hydrating the response into an internal domain DTO.
 _Avoid_: Network log, payload dump
 
+**Zero-PII Training Pipeline**:
+The mandatory pre-persistence redaction boundary that strips all customer financial, national, and geographic identifiers before desk handoffs or conversation pairs enter the model training flywheel.
+_Avoid_: Training scrubber, data cleaner, anonymizer
+
+

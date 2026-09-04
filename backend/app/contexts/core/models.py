@@ -78,3 +78,37 @@ class RefreshToken(Base):
     user = relationship("User", back_populates="refresh_tokens")
     merchant = relationship("Merchant")
 
+
+class AIWallet(Base):
+    """Merchant prepaid AI token wallet tracking consumption and cost savings in Kobo (ADR-0039)."""
+    __tablename__ = "ai_wallets"
+    __table_args__ = {"schema": "core"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), unique=True, nullable=False)
+    balance_kobo = Column(BigInteger, nullable=False, default=0)
+    monthly_hard_cap_kobo = Column(BigInteger, nullable=False, default=1000000)
+    bundled_tokens_remaining = Column(Integer, nullable=False, default=10000)
+    total_tokens_consumed = Column(BigInteger, nullable=False, default=0)
+    total_kobo_spent = Column(BigInteger, nullable=False, default=0)
+    estimated_kobo_saved = Column(BigInteger, nullable=False, default=0)
+    is_locked = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class AITokenLedgerEntry(Base):
+    """Immutable ledger entry tracking token consumption with source context attribution (ADR-0039 & ADR-0040)."""
+    __tablename__ = "ai_token_ledger"
+    __table_args__ = {"schema": "core"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_context = Column(String(32), nullable=False, default="INGRESS")  # INGRESS, DESK, RESERVATIONS, CHECKOUT
+    task_priority = Column(String(32), nullable=False, default="CUSTOMER_FACING")
+    tokens_consumed = Column(Integer, nullable=False)
+    kobo_cost = Column(BigInteger, nullable=False, default=0)
+    model_name = Column(String(64), nullable=False, default="gemini-3.7-flash")
+    reference_id = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
