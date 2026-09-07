@@ -1,10 +1,60 @@
-"""Custom Local Model Classifier Adapters (HuggingFace, ONNX Runtime, and Mock Simulator)."""
+"""Custom Local Model Classifier Adapters with ONNX Runtime & Lexical Dialect Analyzer (ADR-0024, ADR-0044)."""
 
 import time
 import re
-from typing import Dict, Any, Optional
+import json
+import math
+import structlog
+from pathlib import Path
+from typing import Dict, Any, Optional, List
 from app.adapters.base import CustomClassifierPort, ClassificationOutput
 from app.core.config import settings
+
+logger = structlog.get_logger(__name__)
+
+try:
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+    ONNX_RUNTIME_AVAILABLE = True
+except ImportError:
+    ONNX_RUNTIME_AVAILABLE = False
+    ort = None  # type: ignore
+    Tokenizer = None  # type: ignore
+
+
+class LexicalDialectAnalyzer:
+    """Deterministic lexical slang and dialect detector for Nigerian SME commerce (ADR-0044 Q5)."""
+
+    PIDGIN_MARKERS = {
+        "abeg", "dey", "wetin", "oya", "fit", "wahala", "sef", "no cap", "sharp", "sharp sharp",
+        "make we", "how far", "i don", "na so", "una", "comot", "chop", "kobo", "naira",
+        "waybill", "drop am", "send am", "no wahala", "hope say", "you legit", "where your shop dey",
+    }
+
+    COMMERCIAL_SLANG_MARKERS = {
+        "acct", "dm", "last price", "slash price", "discount dey", "reduce small",
+        "wholesale price", "waybill", "dispatch rider", "see past work", "moniepoint acct",
+    }
+
+    @classmethod
+    def detect_dialect(cls, text: str) -> str:
+        lower = text.lower().strip()
+        words = re.findall(r"\b\w+\b", lower)
+
+        pidgin_hits = sum(1 for w in words if w in cls.PIDGIN_MARKERS)
+        slang_hits = sum(1 for w in words if w in cls.COMMERCIAL_SLANG_MARKERS)
+
+        if any(phrase in lower for phrase in ["how far", "sharp sharp", "no wahala", "where your shop dey", "hope say", "make we", "drop am"]):
+            pidgin_hits += 2
+
+        if any(phrase in lower for phrase in ["last price", "slash price", "discount dey", "dispatch rider", "see past work"]):
+            slang_hits += 2
+
+        if pidgin_hits >= 2 or any(w in lower for w in ["abeg", "wetin", "oya", "dey", "sef"]):
+            return "Nigerian Pidgin"
+        elif slang_hits >= 1 or pidgin_hits >= 1:
+            return "Commercial Slang"
+        return "Standard English"
 
 
 class MockCustomClassifierAdapter(CustomClassifierPort):
@@ -21,7 +71,7 @@ class MockCustomClassifierAdapter(CustomClassifierPort):
         lead_tier = "WARM"
         urgency_score = 6
         confidence = 0.88
-        detected_dialect = "Nigerian Pidgin" if any(w in lower for w in ["abeg", "dey", "wetin", "oya", "fit", "wahala", "sef", "no cap"]) else "Commercial Slang"
+        detected_dialect = LexicalDialectAnalyzer.detect_dialect(text)
         action = None
         entities: Dict[str, Any] = {}
 
@@ -77,16 +127,135 @@ class MockCustomClassifierAdapter(CustomClassifierPort):
 
 
 class ONNXClassifierAdapter(CustomClassifierPort):
-    """Production ONNX Runtime execution for exported HuggingFace transformer models."""
+    """
+    Production ONNX Runtime execution for exported HuggingFace transformer models (ADR-0044).
+    Lazily loads model.onnx, tokenizer.json, and labels.json from models/nigerian_pidgin_intent/.
+    If weights or onnxruntime are absent, gracefully delegates to MockCustomClassifierAdapter.
+    """
 
     def __init__(self, model_path: str):
-        self.model_path = model_path
-        self._session = None
+        self.model_path = Path(model_path)
+        self._session: Optional[Any] = None
+        self._tokenizer: Optional[Any] = None
+        self._labels: Dict[str, str] = {}
+        self._load_attempted: bool = False
+        self._fallback_adapter = MockCustomClassifierAdapter()
+
+    def _ensure_loaded(self) -> bool:
+        """Lazily verifies and initializes ONNX session and Tokenizer artifacts (ADR-0044 Q9)."""
+        if self._load_attempted:
+            return self._session is not None and self._tokenizer is not None
+
+        self._load_attempted = True
+
+        if not ONNX_RUNTIME_AVAILABLE:
+            logger.warning(
+                "onnxruntime_or_tokenizers_package_not_installed_falling_back_to_mock",
+                model_path=str(self.model_path),
+            )
+            return False
+
+        model_file = self.model_path / "model.onnx"
+        tokenizer_file = self.model_path / "tokenizer.json"
+        labels_file = self.model_path / "labels.json"
+
+        if not (model_file.exists() and tokenizer_file.exists()):
+            logger.info(
+                "onnx_model_files_not_found_falling_back_to_mock",
+                model_file_exists=model_file.exists(),
+                tokenizer_file_exists=tokenizer_file.exists(),
+                model_path=str(self.model_path),
+            )
+            return False
+
+        try:
+            # Initialize ONNX inference session with CPU provider
+            self._session = ort.InferenceSession(str(model_file), providers=["CPUExecutionProvider"])
+            self._tokenizer = Tokenizer.from_file(str(tokenizer_file))
+
+            if labels_file.exists():
+                self._labels = json.loads(labels_file.read_text(encoding="utf-8"))
+            else:
+                self._labels = {
+                    "0": "GENERAL_INQUIRY",
+                    "1": "WHOLESALE_DISCOUNT_INQUIRY",
+                    "2": "DELIVERY_TIMELINE_INQUIRY",
+                    "3": "TRUST_VERIFICATION_PROOF",
+                    "4": "REQUEST_PAYMENT_DETAILS",
+                }
+
+            logger.info("onnx_classifier_loaded_successfully", model_path=str(self.model_path))
+            return True
+        except Exception as exc:
+            logger.warning("onnx_session_init_failed_falling_back_to_mock", error=str(exc))
+            self._session = None
+            self._tokenizer = None
+            return False
 
     async def classify(self, text: str) -> ClassificationOutput:
-        # Fallback to mock adapter if ONNX weights not present in local filesystem
-        mock = MockCustomClassifierAdapter()
-        return await mock.classify(text)
+        start_time = time.perf_counter()
+
+        if not self._ensure_loaded():
+            return await self._fallback_adapter.classify(text)
+
+        try:
+            # Tokenize input using HuggingFace fast tokenizer
+            encoded = self._tokenizer.encode(text)
+            input_ids = [encoded.ids]
+            attention_mask = [encoded.attention_mask]
+
+            # Run ONNX inference
+            inputs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            }
+            outputs = self._session.run(None, inputs)
+            logits = outputs[0][0]
+
+            # Softmax calculation
+            max_logit = max(logits)
+            exp_logits = [math.exp(x - max_logit) for x in logits]
+            sum_exp = sum(exp_logits)
+            probs = [e / sum_exp for e in exp_logits]
+
+            top_idx = max(range(len(probs)), key=lambda i: probs[i])
+            confidence = round(probs[top_idx], 4)
+            intent = self._labels.get(str(top_idx), "GENERAL_INQUIRY")
+
+            # Dialect determined via parallel Lexical Dialect Analyzer (ADR-0044 Q5)
+            dialect = LexicalDialectAnalyzer.detect_dialect(text)
+
+            # Heuristic lead tier & urgency mapping based on intent
+            lead_tier = "WARM"
+            urgency_score = 6
+            action = None
+            if intent in ["WHOLESALE_DISCOUNT_INQUIRY", "REQUEST_PAYMENT_DETAILS"]:
+                lead_tier = "HOT"
+                urgency_score = 8
+                action = "APPLY_BULK_DISCOUNT_TIER" if intent == "WHOLESALE_DISCOUNT_INQUIRY" else "GENERATE_VIRTUAL_NUBAN_HOLD"
+            elif intent == "TRUST_VERIFICATION_PROOF":
+                action = "INJECT_SOCIAL_PROOF_PDF"
+                urgency_score = 7
+            elif intent == "DELIVERY_TIMELINE_INQUIRY":
+                action = "CALCULATE_DISPATCH_ETA"
+                urgency_score = 7
+
+            latency_ms = (time.perf_counter() - start_time) * 1000.0
+
+            return ClassificationOutput(
+                intent=intent,
+                lead_tier=lead_tier,
+                urgency_score=urgency_score,
+                confidence=confidence,
+                detected_dialect=dialect,
+                action=action,
+                extracted_entities={},
+                tokens_consumed=0,
+                latency_ms=round(latency_ms, 2),
+            )
+        except Exception as exc:
+            logger.warning("onnx_inference_failed_falling_back_to_mock", error=str(exc))
+            return await self._fallback_adapter.classify(text)
 
 
 def get_custom_classifier_adapter() -> CustomClassifierPort:

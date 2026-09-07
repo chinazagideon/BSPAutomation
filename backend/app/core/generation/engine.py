@@ -242,13 +242,43 @@ class CentralInferenceEngine(InferenceEnginePort):
 
             try:
                 llm_adapter = get_llm_provider_adapter()
-                prompt = f"Message: {text}"
-                system_instruction = "You are an enterprise AI for Nigerian SME commerce. Classify intent and dialect."
 
+                # Canonical intent & action boundaries (ADR-0044 Q8)
+                system_instruction = (
+                    "You are an enterprise AI for Nigerian SME commerce conversational understanding.\n"
+                    "Analyze customer messages and return structured classification.\n"
+                    "Select the closest canonical intent from:\n"
+                    "- INSTANT_CHECKOUT_ORDER (intent to buy or place an immediate order)\n"
+                    "- PRICE_INQUIRY (asking for product pricing, rate card, or catalog)\n"
+                    "- WHOLESALE_DISCOUNT_INQUIRY (negotiating bulk discounts or wholesale tier)\n"
+                    "- DELIVERY_TIMELINE_INQUIRY (asking dispatch arrival time, riders, waybill)\n"
+                    "- RESERVE_APPOINTMENT (booking or scheduling calendar slots)\n"
+                    "- CONFIRM_PAYMENT (claiming payment transfer was made)\n"
+                    "- TRUST_VERIFICATION_PROOF (asking if legit, past reviews, shop location)\n"
+                    "- HUMAN_AGENT_HANDOFF (explicit request to speak to a human or agent)\n"
+                    "- COMPLEX_CONSULTATION (nuanced consultation requiring advisory guidance)\n"
+                    "- GENERAL_INQUIRY (general commercial questions or inquiries)\n\n"
+                    "Constraints:\n"
+                    "- lead_tier MUST be 'HOT', 'WARM', or 'COLD'.\n"
+                    "- urgency_score MUST be an integer from 1 to 10.\n"
+                    "- detected_dialect MUST be 'Nigerian Pidgin', 'Commercial Slang', or 'Standard English'.\n"
+                    "- suggested_reply must be professional, warm, culturally attuned Nigerian commercial English or Pidgin."
+                )
+
+                # Decouple context: persistent manifests in system_instruction, turns in prompt (ADR-0044 Q10)
+                prompt = f"Customer Message: {text}"
                 if context:
-                    extra_sections = context.format_system_prompt_sections()
-                    if extra_sections:
-                        system_instruction += f"\n\n{extra_sections}"
+                    persistent_slices = [
+                        f"### {name.replace('_', ' ').title()}:\n{s.content}"
+                        for name, s in context.slices.items()
+                        if name != "customer_history" and s.content.strip()
+                    ]
+                    if persistent_slices:
+                        system_instruction += "\n\n" + "\n\n".join(persistent_slices)
+
+                    if "customer_history" in context.slices and context.slices["customer_history"].content.strip():
+                        history_content = context.slices["customer_history"].content.strip()
+                        prompt = f"Recent Dialogue History:\n{history_content}\n\nLatest Customer Message: {text}"
 
                 llm_res = await llm_adapter.generate_chat_completion(prompt, system_instruction)
                 latency = (time.perf_counter() - start_time) * 1000.0

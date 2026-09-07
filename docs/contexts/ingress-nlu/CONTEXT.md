@@ -111,5 +111,10 @@ _Avoid_: Button mapping, quick-reply parsing, ID hook
 The instantaneous purging of an active Negotiation Frame from Redis triggered by explicit Nigerian Pidgin or English abort keywords.
 _Avoid_: Cart cancellation, session reset, abort command
 
+**Lexical Dialect Analyzer**:
+A deterministic slang and dialect detector evaluating localized particles and idioms in parallel to neural intent classification.
+_Avoid_: Dialect model, language parser
 
-
+**Structured Schema Decoupling**:
+The strict enforcement of typed Pydantic contracts at the LLM provider boundary with graceful fallback to human agent desk handoff on API failure.
+_Avoid_: Direct JSON extraction, loose completion

@@ -293,6 +293,7 @@ class IngressService:
             customer_phone=request.customer_phone,
             customer_name=request.customer_name or "Valued SME Customer",
             previous_context=request.previous_context,
+            policy=request.policy,
         )
 
         # Update AI Wallet metrics if merchant wallet exists

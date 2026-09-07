@@ -30,6 +30,7 @@ class CascadingNLUPipeline:
         custom_dictionary: Optional[List[dict]] = None,
         catalog_manifest: Optional[str] = None,
         provider_context: Optional[dict] = None,
+        policy: Optional[ExecutionPolicy] = None,
     ) -> NLUClassificationResponse:
         engine = get_inference_engine()
 
@@ -74,7 +75,7 @@ class CascadingNLUPipeline:
         result = await engine.classify(
             text=text,
             context=context,
-            policy=ExecutionPolicy.CASCADING_FALLBACK,
+            policy=policy or ExecutionPolicy.CASCADING_FALLBACK,
             task_priority=TaskPriority.CUSTOMER_FACING,
             custom_dictionary=custom_dictionary,
         )
