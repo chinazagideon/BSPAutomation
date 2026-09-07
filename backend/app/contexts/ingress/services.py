@@ -293,6 +293,7 @@ class IngressService:
             customer_phone=request.customer_phone,
             customer_name=request.customer_name or "Valued SME Customer",
             previous_context=request.previous_context,
+            policy=request.policy,
         )
 
         # Update AI Wallet metrics if merchant wallet exists
@@ -309,7 +310,8 @@ class IngressService:
                     else:
                         cost_kobo = (response.tokens_consumed * 10)  # Approximate token pricing in Kobo
                         wallet.balance_kobo = max(0, wallet.balance_kobo - cost_kobo)
+                        wallet.total_kobo_spent += cost_kobo
                 if response.estimated_kobo_saved > 0:
-                    wallet.total_naira_saved += response.estimated_kobo_saved
+                    wallet.estimated_kobo_saved += response.estimated_kobo_saved
 
         return response

@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import Field
 
 from app.core.response import CamelModel
+from app.core.generation.ports import ExecutionPolicy
 
 
 class WebhookMessageItem(CamelModel):
@@ -26,6 +27,10 @@ class NLUClassificationRequest(CamelModel):
     customer_phone: str = "+2348031234567"
     customer_name: Optional[str] = "Tunde Adeleke"
     previous_context: List[str] = Field(default_factory=list)
+    policy: Optional[ExecutionPolicy] = Field(
+        default=None,
+        description="Optional execution policy override (e.g. DEEP_REASONING, FASTEST_PATH, LOCAL_MODEL, CASCADING_FALLBACK)",
+    )
 
 
 class NLUClassificationResponse(CamelModel):

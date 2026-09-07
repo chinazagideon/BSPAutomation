@@ -79,21 +79,26 @@ class DeskService:
     def generate_synthesized_context(request: ContextInjectionRequest) -> ContextInjectionResponse:
         """
         Synthesizes a 6-field context card from customer conversation history
-        to eliminate repeated questions when escalating to a human agent.
+        via FallbackFactoryRegistry (ADR-0039 & ADR-0040) to eliminate repeated questions.
         """
-        history_str = " ".join(request.chat_history).lower()
-        budget = "₦220,000" if "220" in history_str or "carton" in history_str else "₦50,000"
-        urgency = "HOT" if any(w in history_str for w in ["today", "now", "urgent", "pay", "order"]) else "WARM"
-        dialect = "Nigerian Pidgin" if any(w in history_str for w in ["abeg", "dey", "wetin", "how far"]) else "Standard English"
-
-        card = SixFieldContextCard(
-            executive_summary=f"Customer {request.customer_name} is requesting pricing and express delivery dispatch for wholesale items.",
-            detected_budget_naira=budget,
-            urgency_tier=urgency,
-            dialect=dialect,
-            key_blockers="Customer is confirming if pay-on-delivery is supported for first-time orders.",
-            suggested_first_response=f"Good afternoon {request.customer_name}! I see you want items dispatched today. I have our logistics team on standby.",
-        )
+        from app.core.generation.fallbacks import FallbackFactoryRegistry
+        prompt = f"Customer Name: {request.customer_name}\nHistory: " + " ".join(request.chat_history)
+        factory = FallbackFactoryRegistry.get(SixFieldContextCard)
+        if factory:
+            card = factory.build_fallback(prompt)
+        else:
+            history_str = " ".join(request.chat_history).lower()
+            budget = "₦220,000" if "220" in history_str or "carton" in history_str else "₦50,000"
+            urgency = "HOT" if any(w in history_str for w in ["today", "now", "urgent", "pay", "order"]) else "WARM"
+            dialect = "Nigerian Pidgin" if any(w in history_str for w in ["abeg", "dey", "wetin", "how far"]) else "Standard English"
+            card = SixFieldContextCard(
+                executive_summary=f"Customer {request.customer_name} is requesting pricing and express delivery dispatch for wholesale items.",
+                detected_budget_naira=budget,
+                urgency_tier=urgency,
+                dialect=dialect,
+                key_blockers="Customer is confirming if pay-on-delivery is supported for first-time orders.",
+                suggested_first_response=f"Good afternoon {request.customer_name}! I see you want items dispatched today. I have our logistics team on standby.",
+            )
 
         return ContextInjectionResponse(
             status="CONTEXT_INJECTED",

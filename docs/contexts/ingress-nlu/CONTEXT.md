@@ -9,8 +9,8 @@ The conversational scoring system that evaluates incoming user signals (urgency,
 _Avoid_: Lead tracker, scoring script
 
 **Hot Lead Workflow**:
-A zero-friction, deterministic fast-path execution triggered by high-intent transactional signals that generates an instant checkout link without LLM generation.
-_Avoid_: Instant sale, auto-checkout
+A zero-friction, deterministic fast-path execution triggered only after Parameter Convergence on high-intent transactional signals, generating an instant checkout hold without LLM generation.
+_Avoid_: Instant sale, auto-checkout, premature billing
 
 **Parametric Search**:
 An inventory retrieval workflow triggered by budget-constrained signals (`price <= X`) querying PostgreSQL for exact SKU matches without aggressive upselling.
@@ -67,4 +67,54 @@ _Avoid_: Score check, confidence router
 **NLU Stage State Controller**:
 An environment-driven and tenant-configurable toggle matrix (`USE_FAST_PATH`, `USE_CUSTOM_MODEL`, `USE_LLM_ESCALATION`) that deterministically enables or bypasses specific stages in the cascading pipeline.
 _Avoid_: Feature flag, model switch
+**Catalog Manifest**:
+A structured, Redis-cached JSON dictionary of a merchant's top SKUs, prices, unit packaging, and delivery policies injected directly into Stage 3 LLM prompt context to eliminate external vector database latency and cost.
+_Avoid_: Vector database, catalog table, RAG embeddings
 
+**Voice Note Passthrough**:
+An ingestion policy that preserves incoming WhatsApp audio attachments by their immutable media_id without external speech-to-text transcription, logging the media reference and routing to human desk review or prompting text elaboration.
+_Avoid_: Audio transcriber, Whisper engine, voice bot
+
+**Fast-Path Distributed Dictionary**:
+A Redis-cached trigram and regex rule set populated from ingress.fast_path_dictionary with instantaneous pub/sub eviction on merchant configuration changes, sustaining sub-2ms Stage 1 execution.
+_Avoid_: Static regex, dynamic SQL search
+
+**Provider Context Manifest**:
+An asynchronously synchronized and cached data object holding merchant-specific WhatsApp Business Account (WABA) metadata (verified business name, operating hours, delivery zones, Meta catalog ID, active promotional offerings) injected into Stage 3 LLM prompts to ground conversational reasoning in live provider state without synchronous API calls.
+_Avoid_: WABA settings, provider config, API sync
+
+**Parameter Convergence**:
+The verification state where all mandatory parameters of a local tool contract are resolved, unambiguous, and validated against in-memory merchant manifests.
+_Avoid_: Form completion, slot readiness
+
+**Clarification Slot-Filling**:
+A deterministic, zero-token dialogue turn that presents structured options (via WhatsApp buttons or compact menus) to solicit missing parameters from the customer.
+_Avoid_: Bot questioning, parameter prompting
+
+**Negotiation Frame**:
+An ephemeral, Redis-backed session state machine holding partially bound tool slots and candidate options with a 15-minute sliding TTL during multi-turn negotiation.
+_Avoid_: Draft cart, session memory, temporary order
+
+**WhatsApp Message Debounce Buffer**:
+A 1.2-second Redis-backed per-phone aggregation window that concatenates rapid-fire message bursts into a single inbound conversational turn before NLU classification.
+_Avoid_: Message queue, delay buffer, burst throttler
+
+**Frame Preservation**:
+The retention and TTL extension of an active Negotiation Frame during intermediate intent swerves (e.g. FAQ inquiries or agent handoff), allowing seamless resumption of commercial checkout.
+_Avoid_: Session pausing, cart freeze, context parking
+
+**Direct Slot Binding**:
+The deterministic assignment of typed slot values extracted directly from WhatsApp interactive payload identifiers without NLP entity parsing.
+_Avoid_: Button mapping, quick-reply parsing, ID hook
+
+**Deterministic Cancellation Eviction**:
+The instantaneous purging of an active Negotiation Frame from Redis triggered by explicit Nigerian Pidgin or English abort keywords.
+_Avoid_: Cart cancellation, session reset, abort command
+
+**Lexical Dialect Analyzer**:
+A deterministic slang and dialect detector evaluating localized particles and idioms in parallel to neural intent classification.
+_Avoid_: Dialect model, language parser
+
+**Structured Schema Decoupling**:
+The strict enforcement of typed Pydantic contracts at the LLM provider boundary with graceful fallback to human agent desk handoff on API failure.
+_Avoid_: Direct JSON extraction, loose completion

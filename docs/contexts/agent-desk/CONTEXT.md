@@ -24,3 +24,11 @@ _Avoid_: Backlog, pending tickets
 A structured JSON payload (`executiveSummary`, `detectedBudgetNaira`, `urgencyTier`, `dialect`, `keyBlockers`, `suggestedFirstResponse`) injected into the live agent interface on every escalation to eliminate repeated questions.
 _Avoid_: Chat summary, handoff ticket
 
+**Ticket Claim Model**:
+An escalation pattern where unassigned tickets (`assigned_agent_id = NULL`) are broadcast simultaneously to all `ONLINE` agents in a regional hub via Server-Sent Events (SSE), secured by atomic SQL conditional updates on first claim.
+_Avoid_: Round-robin assignment, forced dispatch
+
+**Power Outage Failover Loop**:
+An automated failover state triggered by the ARQ heartbeat cron when 100% of agents in a regional hub are flagged `OFFLINE_NEPA`, dispatching preserved queue position messages to customers and emergency alerts to merchant management.
+_Avoid_: Downtime script, offline mode
+

@@ -36,3 +36,13 @@ _Avoid_: Account timeout, hold delay
 The integer representation of monetary amounts where ₦1.00 equals 100 kobo to prevent floating-point rounding discrepancies in double-entry reconciliation.
 _Avoid_: Fractional Naira, decimal amount
 
+**Full Parameter Invariant**:
+The prerequisite requiring both merchandise SKU and delivery fee to be resolved before dynamic virtual NUBAN issuance, guaranteeing an immutable total kobo amount for 4-leg reconciliation.
+_Avoid_: Order readiness, payment readiness, total check
+
+**Atomic Check-and-Hold**:
+A synchronized database verification and provisional stock reservation executed at the exact instant of Parameter Convergence before issuing payment credentials.
+_Avoid_: Stock lock, inventory check, pre-order hold
+
+
+
