@@ -86,4 +86,21 @@ _Avoid_: Function signature, tool schema, API definition
 The verification state where all mandatory parameters of a local tool contract are resolved, unambiguous, and validated against in-memory merchant manifests.
 _Avoid_: Form completion, slot readiness
 
+**Core Offering Contract**:
+The universal schema base for any product, service, or commodity stored in the knowledge base, defining non-negotiable discovery attributes (`sku`, `title`, `price_kobo`, `currency`, `is_available`, `category`, and `offering_type`).
+_Avoid_: Product model, item row, listing contract
+
+**Vertical Schema**:
+A domain-specific extension to the Core Offering Contract (e.g. `PHYSICAL_PRODUCT`, `SERVICE_APPOINTMENT`) discriminated by `offering_type` that captures industry-specific inventory and fulfillment attributes.
+_Avoid_: Custom fields, subtype table, child schema
+
+**Tiered Discovery**:
+A multi-stage catalog search strategy prioritizing exact category matching, keyword token containment, and GIN trigram similarity while guaranteeing in-stock priority ranking.
+_Avoid_: Hybrid search, basic filter, text lookup
+
+**Catalog Miss Event**:
+A business domain event emitted when customer intent queries products or services missing from the authenticated merchant's knowledge entries, alerting the merchant while delivering a polite customer fallback.
+_Avoid_: Search failure, 404 alert, empty result log
+
+
 

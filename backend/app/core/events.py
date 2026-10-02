@@ -81,6 +81,15 @@ class MerchantProviderContextUpdatedEvent(DomainEvent):
     provider_context_data: Dict[str, Any] = Field(default_factory=dict)
 
 
+class CatalogMissDetectedEvent(DomainEvent):
+    """Emitted when a customer inquiry targets products missing from the merchant's catalog."""
+    event_type: str = "catalog.miss.detected"
+    customer_phone: str
+    query_term: str
+    raw_message: str
+    detected_category: Optional[str] = None
+
+
 class EventBus:
     """Asynchronous In-Process and Redis-backed Event Bus with OpenTelemetry Tracing."""
 

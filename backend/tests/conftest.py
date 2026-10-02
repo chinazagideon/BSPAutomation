@@ -44,3 +44,25 @@ def auth_headers_factory() -> Callable[..., dict]:
 def default_merchant_headers(auth_headers_factory) -> dict:
     """Standard authenticated headers with OWNER role."""
     return auth_headers_factory()
+
+
+@pytest_asyncio.fixture
+async def seeded_demo_tenants() -> dict:
+    """Provisions the standard multi-tenant demo catalogs in database & Redis."""
+    from app.core.database import async_session_factory
+    from app.contexts.knowledge.seeder import CatalogSeeder
+    from app.contexts.knowledge.seed_data import (
+        ALABA_AGRO_MERCHANT_ID,
+        LEKKI_GLOW_MERCHANT_ID,
+        HORIZON_TECH_MERCHANT_ID,
+    )
+
+    async with async_session_factory() as session:
+        await CatalogSeeder.seed_all(session=session, reset=False)
+
+    return {
+        "alaba_agro_id": str(ALABA_AGRO_MERCHANT_ID),
+        "lekki_glow_id": str(LEKKI_GLOW_MERCHANT_ID),
+        "horizon_tech_id": str(HORIZON_TECH_MERCHANT_ID),
+    }
+

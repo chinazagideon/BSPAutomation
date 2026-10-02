@@ -157,34 +157,34 @@ async def resolve_merchant_from_phone(
             return merchant_id
         del _PHONE_TENANT_CACHE[phone_number_id]
 
-    # 2. Database Fallback
     from app.contexts.core.models import Merchant
 
-    if db is not None:
-        result = await db.execute(
-            select(Merchant.id).where(
-                (Merchant.whatsapp_phone_number_id == phone_number_id) |
-                (Merchant.whatsapp_business_phone == phone_number_id)
-            )
+    query = (
+        select(Merchant.id)
+        .where(
+            (Merchant.whatsapp_phone_number_id == phone_number_id) |
+            (Merchant.whatsapp_business_phone == phone_number_id)
         )
-        merchant_id_uuid = result.scalar_one_or_none()
-        if merchant_id_uuid:
-            m_id = str(merchant_id_uuid)
-            _PHONE_TENANT_CACHE[phone_number_id] = (m_id, now + _CACHE_TTL_SECONDS)
-            return m_id
+        .order_by(
+            Merchant.is_active.desc(),
+            (Merchant.whatsapp_phone_number_id == phone_number_id).desc(),
+            Merchant.updated_at.desc(),
+        )
+        .limit(1)
+    )
+
+    if db is not None:
+        result = await db.execute(query)
+        merchant_id_uuid = result.scalars().first()
     else:
         async with async_session_factory() as session:
-            result = await session.execute(
-                select(Merchant.id).where(
-                    (Merchant.whatsapp_phone_number_id == phone_number_id) |
-                    (Merchant.whatsapp_business_phone == phone_number_id)
-                )
-            )
-            merchant_id_uuid = result.scalar_one_or_none()
-            if merchant_id_uuid:
-                m_id = str(merchant_id_uuid)
-                _PHONE_TENANT_CACHE[phone_number_id] = (m_id, now + _CACHE_TTL_SECONDS)
-                return m_id
+            result = await session.execute(query)
+            merchant_id_uuid = result.scalars().first()
+
+    if merchant_id_uuid:
+        m_id = str(merchant_id_uuid)
+        _PHONE_TENANT_CACHE[phone_number_id] = (m_id, now + _CACHE_TTL_SECONDS)
+        return m_id
 
     return None
 

@@ -330,7 +330,13 @@ def get_whatsapp_bsp_adapter(http_client: Optional[AuditedHttpClient] = None) ->
         return _MOCK_WHATSAPP_INSTANCE
 
     from app.core.egress import get_default_audited_client
-    resolved_client = http_client or get_default_audited_client()
+    try:
+        resolved_client = http_client or get_default_audited_client()
+    except RuntimeError:
+        if _MOCK_WHATSAPP_INSTANCE is None:
+            _MOCK_WHATSAPP_INSTANCE = MockWhatsAppBSPAdapter()
+        return _MOCK_WHATSAPP_INSTANCE
+
     return MetaCloudWhatsAppAdapter(
         api_token=settings.META_CLOUD_API_TOKEN,
         phone_number_id=settings.META_PHONE_NUMBER_ID,

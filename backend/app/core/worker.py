@@ -394,45 +394,42 @@ async def _execute_webhook_processing(
         tool_buttons = None
         tool_action = None
 
-        # 6A: Direct Interactive Button Slot Binding (ADR-0043 Point 9)
+        # 6A: Direct Interactive Button Slot Binding & Dual ID Scheme (ADR-0043, ADR-0044)
         if is_interactive and interactive_id:
-            parsed_slot = NegotiationFrameManager.parse_interactive_id(interactive_id)
-            if parsed_slot and active_frame:
-                slot_name, slot_val = parsed_slot
-                active_frame.bound_slots[slot_name] = slot_val
-                tool_res = await get_local_tool_dispatcher().evaluate(
-                    intent=active_frame.intent,
-                    slots=active_frame.bound_slots,
+            from app.core.generation.response_orchestrator import ResponseOrchestrator
+            from app.core.generation.response_classifier import ResponseStrategy
+
+            if interactive_id.startswith("PRODUCT:"):
+                envelope = await ResponseOrchestrator.resolve_interactive_action(
+                    merchant_id=merchant_id,
+                    interactive_id=interactive_id,
+                    customer_phone=sender_phone,
+                    session=session,
                     catalog_manifest=catalog_manifest,
                 )
-                if tool_res:
+                if envelope:
                     tool_handled = True
-                    if tool_res.status == ToolStatus.NEEDS_CLARIFICATION:
-                        active_frame.missing_slots = tool_res.missing_slots
-                        await NegotiationFrameManager.save_frame(merchant_id, sender_phone, active_frame)
-                        tool_reply_text = tool_res.clarification.prompt_text if tool_res.clarification else "Please choose an option."
-                        tool_buttons = tool_res.clarification.buttons if tool_res.clarification else None
-                        tool_action = "DISPATCH_CLARIFICATION"
-                    elif tool_res.status == ToolStatus.CONVERGED:
-                        await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
-                        total_kobo = tool_res.calculated_total_kobo or 0
-                        total_naira = f"₦{total_kobo // 100:,}"
-                        loc_str = f" for delivery to {tool_res.bound_slots.get('delivery_zone', 'your address')}" if tool_res.bound_slots.get("fulfillment_type") == "EXPRESS_DELIVERY" else " for warehouse self-pickup"
-                        tool_reply_text = (
-                            f"Sharp! We don reserve your order ({tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}){loc_str}.\n"
-                            f"Total Amount: *{total_naira}* (10-minute anti-ghosting hold).\n\n"
-                            f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
-                            f"Bank: *Moniepoint MFB*\n"
-                            f"Account Name: *Enterprise SME Store*\n"
-                            f"Account Number: *9031842901*\n\n"
-                            f"Once transfer clear, receipt go land here sharp sharp!"
-                        )
+                    tool_reply_text = envelope.body_text
+                    tool_buttons = envelope.buttons
+                    tool_action = "DISPLAY_PRODUCT_DETAIL_CARD"
+            elif interactive_id.startswith("SET_SLOT:"):
+                envelope = await ResponseOrchestrator.resolve_interactive_action(
+                    merchant_id=merchant_id,
+                    interactive_id=interactive_id,
+                    customer_phone=sender_phone,
+                    session=session,
+                    catalog_manifest=catalog_manifest,
+                )
+                if envelope:
+                    tool_handled = True
+                    tool_reply_text = envelope.body_text
+                    tool_buttons = envelope.buttons
+                    if envelope.strategy == ResponseStrategy.CHECKOUT_CONVERGED:
                         tool_action = "GENERATE_VIRTUAL_NUBAN_HOLD"
-                    elif tool_res.status == ToolStatus.OUT_OF_STOCK:
-                        await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
-                        tool_reply_text = tool_res.clarification.prompt_text if tool_res.clarification else "Sorry, out of stock."
-                        tool_buttons = tool_res.clarification.buttons if tool_res.clarification else None
+                    elif envelope.strategy == ResponseStrategy.OUT_OF_STOCK_ALERT:
                         tool_action = "OUT_OF_STOCK_ALERT"
+                    else:
+                        tool_action = "DISPATCH_CLARIFICATION"
 
         # 6B: Plain Text Inbound with Active Negotiation Frame
         elif active_frame and not tool_handled:
@@ -561,24 +558,52 @@ async def _execute_webhook_processing(
         )
         session.add(inbound_msg)
 
-        # 8. Automated Egress Response (Interactive Buttons if present)
-        buttons = nlu_resp.extracted_entities.get("clarification_buttons") if nlu_resp.extracted_entities else None
-        if nlu_resp.suggested_reply:
-            if buttons and isinstance(buttons, list) and len(buttons) > 0:
+        # 8. Automated Egress Response via ResponseOrchestrator (ADR-0044)
+        from app.core.generation.response_orchestrator import ResponseOrchestrator
+        from app.core.generation.response_formatter import EgressMessageType
+
+        merchant_name_val = "Enterprise SME Store"
+        try:
+            from app.contexts.core.models import Merchant
+            merchant_obj = await session.get(Merchant, UUID(merchant_id))
+            if merchant_obj and merchant_obj.business_name:
+                merchant_name_val = merchant_obj.business_name
+        except Exception:
+            pass
+
+        envelope = await ResponseOrchestrator.resolve(
+            merchant_id=merchant_id,
+            nlu_result=nlu_resp,
+            customer_phone=sender_phone,
+            raw_message=sanitized_text,
+            session=session,
+            merchant_name=merchant_name_val,
+        )
+
+        if envelope:
+            if envelope.message_type == EgressMessageType.INTERACTIVE_LIST:
+                await whatsapp.send_interactive_list(
+                    to_phone=sender_phone,
+                    header_text=envelope.header_text or "Catalog",
+                    body_text=envelope.body_text,
+                    button_title=envelope.button_title or "View Options",
+                    sections=envelope.sections or [],
+                )
+            elif envelope.message_type == EgressMessageType.INTERACTIVE_BUTTONS:
                 await whatsapp.send_interactive_buttons(
                     to_phone=sender_phone,
-                    body_text=nlu_resp.suggested_reply,
-                    buttons=buttons,
+                    body_text=envelope.body_text,
+                    buttons=envelope.buttons or [],
                 )
             else:
-                await whatsapp.send_text_message(to_phone=sender_phone, message=nlu_resp.suggested_reply)
+                await whatsapp.send_text_message(to_phone=sender_phone, message=envelope.body_text)
 
             outbound_msg = Message(
                 conversation_id=conversation.id,
                 merchant_id=UUID(merchant_id),
                 sender="bot",
-                raw_text=nlu_resp.suggested_reply,
-                sanitized_text=nlu_resp.suggested_reply,
+                raw_text=envelope.body_text,
+                sanitized_text=envelope.body_text,
                 intent=nlu_resp.intent,
                 is_fast_path=(nlu_resp.routing_source == "FAST_PATH"),
                 tokens_used=0,

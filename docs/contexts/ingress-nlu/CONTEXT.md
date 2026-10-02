@@ -118,3 +118,24 @@ _Avoid_: Dialect model, language parser
 **Structured Schema Decoupling**:
 The strict enforcement of typed Pydantic contracts at the LLM provider boundary with graceful fallback to human agent desk handoff on API failure.
 _Avoid_: Direct JSON extraction, loose completion
+
+**Response Orchestrator**:
+The post-NLU application coordinator executing between intent classification and egress that retrieves catalog context, invokes response classification, and generates audited channel envelopes.
+_Avoid_: Message sender, reply handler, dispatch script
+
+**Response Classifier**:
+The deterministic mapping engine converting classified intent, extracted commercial entities, and catalog match states into a targeted Response Strategy.
+_Avoid_: Intent mapper, response chooser, action selector
+
+**Response Formatter**:
+The component that transforms abstract Response Strategies and offering entities into channel-compliant WhatsApp UI structures (Interactive Lists, 3-Button Cards, Text).
+_Avoid_: Template engine, string builder, payload maker
+
+**Egress Payload Envelope**:
+A typed, side-effect-free data transfer object encapsulating outbound message type, rendered copy, interactive action elements, and recipient coordinates.
+_Avoid_: Send payload, wire body, outbound message
+
+**Dual Interactive ID Scheme**:
+The protocol distinguishing catalog exploratory actions (`PRODUCT:{sku}`) from transactional slot binding (`SET_SLOT:{param}:{val}`) within WhatsApp interactive component identifiers.
+_Avoid_: Button IDs, payload convention, action keys
+
