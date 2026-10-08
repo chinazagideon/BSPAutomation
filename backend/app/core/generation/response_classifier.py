@@ -32,26 +32,13 @@ class ResponseClassifier:
     ) -> ResponseStrategy:
         norm_intent = (intent or "").strip().upper()
 
-        if norm_intent == "PRICE_INQUIRY":
-            has_product_entity = bool(
-                entities.get("product")
-                or entities.get("category")
-                or entities.get("product_name")
-            )
-            if catalog_count == 0 and has_product_entity:
-                return ResponseStrategy.CATALOG_MISS_ALERT
-            if catalog_count == 1:
-                return ResponseStrategy.SINGLE_PRODUCT_QUOTE
-            if catalog_count > 1:
-                return ResponseStrategy.CATALOG_PRODUCT_LIST
-            return ResponseStrategy.FULL_CATALOG_BROWSE
+        has_product_entity = bool(
+            entities.get("product")
+            or entities.get("category")
+            or entities.get("product_name")
+        )
 
-        if norm_intent in ["SHOW_PRODUCT_CATALOG", "BROWSE_CATALOG"]:
-            has_product_entity = bool(
-                entities.get("product")
-                or entities.get("category")
-                or entities.get("product_name")
-            )
+        if norm_intent in ["PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG", "BROWSE_CATALOG", "STOCK_AVAILABILITY_INQUIRY"] or (has_product_entity and catalog_count > 0):
             if catalog_count == 0 and has_product_entity:
                 return ResponseStrategy.CATALOG_MISS_ALERT
             if catalog_count == 1:

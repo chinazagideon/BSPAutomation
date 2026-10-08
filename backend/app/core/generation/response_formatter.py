@@ -79,27 +79,37 @@ class ResponseFormatter:
     ) -> EgressPayloadEnvelope:
         """Formats 3-button product detail card with live Naira price and dual action IDs."""
         stock_status = "In Stock" if offering.is_available else "Out of Stock"
+        if offering.is_available:
+            call_to_action = "Tap *Order Now* to proceed with checkout."
+            buttons = [
+                {"id": f"SET_SLOT:sku:{offering.sku}", "title": "Order Now"},
+                {"id": "SHOW_CATALOG", "title": "View Catalog"},
+                {"id": "AGENT_HANDOFF", "title": "Speak to Agent"},
+            ]
+            strategy = ResponseStrategy.SINGLE_PRODUCT_QUOTE
+        else:
+            call_to_action = "⚠️ This item is currently *Out of Stock*. You fit browse our available catalog or speak with our team below."
+            buttons = [
+                {"id": "SHOW_CATALOG", "title": "View Catalog"},
+                {"id": "AGENT_HANDOFF", "title": "Speak to Agent"},
+            ]
+            strategy = ResponseStrategy.OUT_OF_STOCK_ALERT
+
         body = (
             f"📦 *{offering.title}*\n"
             f"Price: *₦{offering.price_naira:,.2f}*\n"
             f"Category: {offering.category.title()} | Availability: {stock_status}\n\n"
             f"{offering.description}\n\n"
-            f"Tap *Order Now* to proceed with checkout."
+            f"{call_to_action}"
         )
-
-        buttons = [
-            {"id": f"SET_SLOT:sku:{offering.sku}", "title": "Order Now"},
-            {"id": "SHOW_CATALOG", "title": "View Catalog"},
-            {"id": "AGENT_HANDOFF", "title": "Speak to Agent"},
-        ]
 
         return EgressPayloadEnvelope(
             message_type=EgressMessageType.INTERACTIVE_BUTTONS,
             to_phone=to_phone,
             body_text=body,
             buttons=buttons,
-            strategy=ResponseStrategy.SINGLE_PRODUCT_QUOTE,
-            metadata={"sku": offering.sku, "price_kobo": offering.price_kobo},
+            strategy=strategy,
+            metadata={"sku": offering.sku, "price_kobo": offering.price_kobo, "is_available": offering.is_available},
         )
 
     @staticmethod

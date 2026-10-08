@@ -28,16 +28,28 @@ CANCELLATION_REGEX = re.compile(
 
 
 class NegotiationFrame(BaseModel):
-    """Ephemeral session state machine tracking slot parameter accumulation."""
+    """Ephemeral session state machine tracking slot parameter accumulation and pending offers."""
     merchant_id: str
     phone_hash: str
     active_tool: str
     intent: str
     bound_slots: Dict[str, Any] = Field(default_factory=dict)
     missing_slots: List[str] = Field(default_factory=list)
+    pending_offer: Optional[Dict[str, Any]] = None
     created_at: float = Field(default_factory=time.time)
     last_updated: float = Field(default_factory=time.time)
     revision: int = 1
+
+
+AFFIRMATION_REGEX = re.compile(
+    r"^(?:yes|yeah|yep|yup|ok|okay|k|oya|sure|sharp|send\s*am|pls\s*do|please\s*do|correct|proceed|confirm|carry\s*go|abeg\s*send)\b",
+    re.IGNORECASE
+)
+
+NEGATION_REGEX = re.compile(
+    r"^(?:no|nah|nope|leave\s*am|never\s*mind|i\s*no\s*(?:wan|dey)\s*buy|i\s*no\s*want|forget\s*(?:am|it)|abort|cancel)\b",
+    re.IGNORECASE
+)
 
 
 def compute_phone_hash(merchant_id: str, phone: str) -> str:
@@ -173,6 +185,16 @@ class NegotiationFrameManager:
     def is_cancellation_intent(text: str) -> bool:
         """Determines if the inbound message contains an explicit cancellation command."""
         return bool(CANCELLATION_REGEX.search(text.strip()))
+
+    @staticmethod
+    def is_affirmation_intent(text: str) -> bool:
+        """Determines if the inbound message contains an explicit affirmation (yes, ok, oya, sure, etc.)."""
+        return bool(AFFIRMATION_REGEX.search(text.strip()))
+
+    @staticmethod
+    def is_negation_intent(text: str) -> bool:
+        """Determines if the inbound message contains an explicit negation (no, never mind, leave am, etc.)."""
+        return bool(NEGATION_REGEX.search(text.strip()))
 
     @classmethod
     async def debounce_incoming_message(

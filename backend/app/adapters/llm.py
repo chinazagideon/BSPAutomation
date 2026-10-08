@@ -2,6 +2,8 @@
 
 import time
 import json
+import asyncio
+import re
 import structlog
 from typing import Dict, Any, Optional
 from pydantic import ValidationError
@@ -57,13 +59,39 @@ class GeminiFlashAdapter(LLMProviderPort):
             config = types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
+                tool_config=types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode="NONE" # Ignores the weather tool entirely
+                    )
+                )
             )
 
-            response = await self._client.aio.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=config,
-            )
+            max_attempts = 2
+            response = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    response = await asyncio.wait_for(
+                        self._client.aio.models.generate_content(
+                            model=self.model_name,
+                            contents=prompt,
+                            config=config,
+                        ),
+                        timeout=5.0,
+                    )
+                    break
+                except Exception as exc:
+                    err_str = str(exc)
+                    is_transient = "503" in err_str or "429" in err_str or isinstance(exc, asyncio.TimeoutError)
+                    if attempt < max_attempts and is_transient:
+                        logger.warning(
+                            "gemini_flash_transient_failure_retrying",
+                            attempt=attempt,
+                            error=err_str,
+                            model=self.model_name,
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
 
             latency_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -75,7 +103,7 @@ class GeminiFlashAdapter(LLMProviderPort):
             # Parse and normalize structured JSON output (ADR-0044 Q1 Option B)
             res = self._parse_and_normalize_response(response)
             if not res:
-                return self._build_handoff_fallback(start_time, "Empty or unparseable JSON response from Gemini")
+                return self._build_handoff_fallback(start_time, "Empty or unparseable JSON response from Gemini", prompt)
 
             # Finalize telemetry attributes
             if tokens_consumed == 0:
@@ -92,7 +120,7 @@ class GeminiFlashAdapter(LLMProviderPort):
                 error=str(exc),
                 model=self.model_name,
             )
-            return self._build_handoff_fallback(start_time, str(exc))
+            return self._build_handoff_fallback(start_time, str(exc), prompt)
 
     def _parse_and_normalize_response(self, response: Any) -> Optional[ClassificationOutput]:
         """Extracts JSON and normalizes schema constraints for Pydantic type safety."""
@@ -163,16 +191,45 @@ class GeminiFlashAdapter(LLMProviderPort):
             logger.warning("gemini_json_parsing_failed", error=str(exc), raw_text=raw_text[:200])
             return None
 
-    def _build_handoff_fallback(self, start_time: float, error_detail: str) -> ClassificationOutput:
-        """Constructs an instant agent handoff fallback without billing tokens (ADR-0044)."""
+    def _build_handoff_fallback(
+        self,
+        start_time: float,
+        error_detail: str,
+        prompt: str = "",
+    ) -> ClassificationOutput:
+        """Constructs an instant agent handoff fallback or contextual recovery without billing tokens (ADR-0044)."""
         latency_ms = (time.perf_counter() - start_time) * 1000.0
+        lower = (prompt or "").lower()
+
+        # Contextual degradation: check if prompt mentions an in-stock commodity
+        detected_prod = None
+        for p in ["rice", "sugar", "oil", "flour", "beans", "cement", "milk", "garri", "noodles"]:
+            if re.search(rf"\b{p}\b", lower):
+                detected_prod = p
+                break
+
+        if detected_prod:
+            logger.info("gemini_fallback_contextual_recovery", detected_product=detected_prod, error=error_detail[:80])
+            return ClassificationOutput(
+                intent="PRICE_INQUIRY",
+                lead_tier="HOT",
+                urgency_score=8,
+                confidence=0.85,
+                detected_dialect="Nigerian Commercial Slang",
+                suggested_reply=None,  # ResponseOrchestrator will query catalog for detected_prod
+                action="SHOW_PRODUCT_CATALOG",
+                extracted_entities={"product": detected_prod, "error_fallback": True, "reason": error_detail[:120]},
+                tokens_consumed=0,
+                latency_ms=round(latency_ms, 2),
+            )
+
         return ClassificationOutput(
             intent="GENERAL_INQUIRY",
             lead_tier="WARM",
             urgency_score=6,
             confidence=0.50,
             detected_dialect="Nigerian Commercial Slang",
-            suggested_reply="Thank you for your message! Our senior customer support desk has received your request and will follow up shortly.",
+            suggested_reply="Thank you for your message! Our team is processing your inquiry.",
             action="DISPATCH_AGENT_HANDOFF",
             extracted_entities={"error_fallback": True, "reason": error_detail[:120]},
             tokens_consumed=0,

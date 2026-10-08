@@ -120,13 +120,16 @@ class CentralInferenceEngine(InferenceEnginePort):
                                 if tool_res.bound_slots.get("fulfillment_type") == "EXPRESS_DELIVERY"
                                 else " for warehouse self-pickup"
                             )
+                            waba_name = "Enterprise SME Store"
+                            if context and "provider_context" in context.slices and context.slices["provider_context"].structured_data:
+                                waba_name = context.slices["provider_context"].structured_data.get("verified_business_name", waba_name)
                             suggested_reply = (
                                 f"Sharp! We don reserve your order ({tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}){loc_str}.\n"
                                 f"Total Amount: *{total_naira_str}* (10-minute anti-ghosting hold).\n\n"
                                 f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
                                 f"Bank: *Moniepoint MFB*\n"
-                                f"Account Name: *Enterprise SME Store*\n"
-                                f"Account Number: *9031842901*\n\n"
+                                f"Account Name: *{waba_name}*\n"
+                                f"Account Number: *Allocated on hold confirmation*\n\n"
                                 f"Once transfer clear, receipt go land here sharp sharp!"
                             )
                         elif tool_res.status == ToolStatus.OUT_OF_STOCK:
@@ -146,6 +149,15 @@ class CentralInferenceEngine(InferenceEnginePort):
                                 else "We could not find this product in our catalog."
                             )
 
+                logger.info(
+                    "nlu_pipeline_stage_selected",
+                    stage="STAGE_1_FAST_PATH",
+                    intent=fp_result.intent,
+                    action=action,
+                    confidence=fp_result.confidence,
+                    latency_ms=round(latency, 2),
+                    tokens_consumed=0,
+                )
                 return ClassificationResult(
                     intent=fp_result.intent,
                     lead_tier=fp_result.lead_tier,
@@ -182,13 +194,33 @@ class CentralInferenceEngine(InferenceEnginePort):
             if custom_res.extracted_entities:
                 extracted_entities.update(custom_res.extracted_entities)
 
-            if custom_res.confidence >= settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD or policy == ExecutionPolicy.LOCAL_MODEL:
+            is_custom_hit = custom_res.confidence >= settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD or policy == ExecutionPolicy.LOCAL_MODEL
+            logger.info(
+                "stage_2_custom_model_evaluated",
+                model_type=settings.CUSTOM_MODEL_TYPE,
+                intent=custom_res.intent,
+                confidence=custom_res.confidence,
+                threshold=settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD,
+                matched=is_custom_hit,
+                latency_ms=round(custom_res.latency_ms, 2),
+            )
+
+            if is_custom_hit:
                 reply = custom_res.suggested_reply or synthesize_custom_model_reply(
                     intent=custom_res.intent,
                     dialect=custom_res.detected_dialect,
                     entities=extracted_entities,
                 )
                 latency = (time.perf_counter() - start_time) * 1000.0
+                logger.info(
+                    "nlu_pipeline_stage_selected",
+                    stage="STAGE_2_CUSTOM_MODEL",
+                    intent=custom_res.intent,
+                    action=custom_res.action or "EXECUTE_LOCAL_INTENT_WORKFLOW",
+                    confidence=custom_res.confidence,
+                    latency_ms=round(latency, 2),
+                    tokens_consumed=0,
+                )
                 return ClassificationResult(
                     intent=custom_res.intent,
                     lead_tier=custom_res.lead_tier,
@@ -280,8 +312,32 @@ class CentralInferenceEngine(InferenceEnginePort):
                         history_content = context.slices["customer_history"].content.strip()
                         prompt = f"Recent Dialogue History:\n{history_content}\n\nLatest Customer Message: {text}"
 
+                logger.info(
+                    "stage_3_llm_dispatch_started",
+                    model=settings.GEMINI_MODEL,
+                    text_length=len(text),
+                )
                 llm_res = await llm_adapter.generate_chat_completion(prompt, system_instruction)
                 latency = (time.perf_counter() - start_time) * 1000.0
+
+                logger.info(
+                    "stage_3_llm_dispatch_completed",
+                    model=settings.GEMINI_MODEL,
+                    intent=llm_res.intent,
+                    action=llm_res.action,
+                    confidence=llm_res.confidence,
+                    tokens_consumed=llm_res.tokens_consumed or 380,
+                    latency_ms=round(latency, 2),
+                )
+                logger.info(
+                    "nlu_pipeline_stage_selected",
+                    stage="STAGE_3_LLM_ESCALATION",
+                    intent=llm_res.intent,
+                    action=llm_res.action,
+                    confidence=llm_res.confidence,
+                    latency_ms=round(latency, 2),
+                    tokens_consumed=llm_res.tokens_consumed or 380,
+                )
 
                 return ClassificationResult(
                     intent=llm_res.intent,
@@ -302,6 +358,14 @@ class CentralInferenceEngine(InferenceEnginePort):
 
         # Fallback
         latency = (time.perf_counter() - start_time) * 1000.0
+        logger.info(
+            "nlu_pipeline_stage_selected",
+            stage="FALLBACK_DESK_HANDOFF",
+            intent="UNRESOLVED_GENERAL_QUERY",
+            confidence=0.50,
+            latency_ms=round(latency, 2),
+            tokens_consumed=0,
+        )
         return ClassificationResult(
             intent="UNRESOLVED_GENERAL_QUERY",
             lead_tier="WARM",

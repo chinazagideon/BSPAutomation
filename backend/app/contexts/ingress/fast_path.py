@@ -3,7 +3,10 @@
 import re
 import time
 from typing import Optional, Dict, Any
+import structlog
 from app.adapters.base import ClassificationOutput
+
+logger = structlog.get_logger(__name__)
 
 
 def extract_commercial_entities(text: str) -> Dict[str, Any]:
@@ -88,7 +91,7 @@ def fast_path_classify(
             phrase = (rule.get("phrase_pattern") or "").lower().strip()
             if phrase and phrase in lower:
                 latency = (time.perf_counter() - start_time) * 1000.0
-                return ClassificationOutput(
+                out = ClassificationOutput(
                     intent=rule.get("intent", "CUSTOM_MERCHANT_INTENT"),
                     lead_tier=rule.get("lead_tier", "WARM"),
                     urgency_score=rule.get("urgency_score", 7),
@@ -100,11 +103,20 @@ def fast_path_classify(
                     tokens_consumed=0,
                     latency_ms=max(1.0, latency),
                 )
+                logger.info(
+                    "stage_1_fast_path_matched",
+                    rule_source="custom_dictionary",
+                    intent=out.intent,
+                    confidence=out.confidence,
+                    latency_ms=out.latency_ms,
+                    entities=out.extracted_entities,
+                )
+                return out
 
-    # 1. Payment Transfer Confirmation (High-intent hot lead)
-    if re.search(r"(?:i\s*don\s*pay|done\s*transfer|i\s*sent\s*the\s*money|alert\s*don\s*enter|see\s*debit\s*alert|receipt\s*dey|transfer\s*successful|paid|i\s*have\s*paid)", lower):
+    # 1. Payment Transfer Confirmation (High-intent hot lead, strict word boundaries)
+    if re.search(r"\b(?:i\s*don\s*pay|done\s*transfer|i\s*sent\s*the\s*money|alert\s*don\s*enter|see\s*debit\s*alert|receipt\s*dey|transfer\s*successful|paid|i\s*have\s*paid)\b", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="CONFIRM_PAYMENT",
             lead_tier="HOT",
             urgency_score=10,
@@ -116,11 +128,24 @@ def fast_path_classify(
             tokens_consumed=0,
             latency_ms=max(1.5, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="confirm_payment",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
-    # 2. Explicit Negotiation Cancellation
-    if re.search(r"\b(cancel(?:\s+am|\s+order|\s+it)?|never\s*mind|no\s*buy\s*again|i\s*no\s*(?:wan|dey)\s*buy|forget\s*(?:am|it)|abort|drop\s*am)\b", lower):
+    # 2. Explicit Negotiation Cancellation (Ensure 'drop am for [location]' is not misclassified as cancel)
+    is_cancel = bool(re.search(r"\b(cancel(?:\s+am|\s+order|\s+it)?|never\s*mind|no\s*buy\s*again|i\s*no\s*(?:wan|dey)\s*buy|forget\s*(?:am|it)|abort)\b", lower))
+    if not is_cancel and re.search(r"\bdrop\s*am\b", lower) and not re.search(r"\bdrop\s*am\s*(?:for|to|at)\b", lower):
+        is_cancel = True
+
+    if is_cancel:
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="CANCEL_ORDER",
             lead_tier="COLD",
             urgency_score=5,
@@ -132,11 +157,55 @@ def fast_path_classify(
             tokens_consumed=0,
             latency_ms=max(1.0, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="cancel_order",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
-    # 3. Instant Order / Checkout Intent (Delegated to LocalToolDispatcher per ADR-0043)
-    if re.search(r"(?:i\s*wan\s*buy|i\s*wan\s*order|send\s*account\s*details|how\s*i\s*go\s*pay|pack\s*\d+|deliver\s*to|drop\s*am\s*for|i\s*need\s*\d+|give\s*me\s*\d+|i\s*want\s*\d+|buy\s*\d+)", lower):
+    # 3. Product Availability & Stock Inquiry (ADR-0046 live catalog lookup)
+    # Catches: "Do you have rice in store?", "You get sugar?", "Is royal stallion available?", "rice dey?"
+    has_product = bool(entities.get("product"))
+    stock_inquiry_match = bool(re.search(r"(?:do\s*you\s*have|you\s*get|is\s*there|any\s*stock|in\s*stock|available|dey\s*(?:store|shop|ground)|una\s*get)\b", lower))
+    if stock_inquiry_match or (has_product and re.search(r"\b(?:dey|have|stock|available)\b", lower)):
+        if not entities.get("product"):
+            for commodity in ["rice", "sugar", "oil", "flour", "beans", "cement", "milk", "garri", "noodles", "salt"]:
+                if commodity in lower:
+                    entities["product"] = commodity
+                    has_product = True
+                    break
+        if has_product:
+            latency = (time.perf_counter() - start_time) * 1000.0
+            out = ClassificationOutput(
+                intent="PRICE_INQUIRY",
+                lead_tier="HOT",
+                urgency_score=8,
+                confidence=0.96,
+                detected_dialect=dialect,
+                suggested_reply=None,  # Delegated to ResponseOrchestrator for live PostgreSQL catalog search
+                action="SHOW_PRODUCT_CATALOG",
+                extracted_entities=entities,
+                tokens_consumed=0,
+                latency_ms=max(1.5, latency),
+            )
+            logger.info(
+                "stage_1_fast_path_matched",
+                rule_source="stock_availability_inquiry",
+                intent=out.intent,
+                confidence=out.confidence,
+                latency_ms=out.latency_ms,
+                entities=out.extracted_entities,
+            )
+            return out
+
+    # 4. Instant Order / Checkout Intent (Delegated to LocalToolDispatcher per ADR-0043)
+    if re.search(r"(?:i\s*wan\s*buy|i\s*wan\s*order|send\s*account\s*details|how\s*i\s*go\s*pay|pack\s*\d+|deliver\s*to|drop\s*am\s*(?:for|to)|i\s*need\s*\d+|give\s*me\s*\d+|i\s*want\s*\d+|buy\s*\d+)", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="INSTANT_CHECKOUT_ORDER",
             lead_tier="HOT",
             urgency_score=9,
@@ -148,11 +217,20 @@ def fast_path_classify(
             tokens_consumed=0,
             latency_ms=max(1.5, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="instant_checkout_order",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
-    # 3. Reservation & Booking Slot Hold
+    # 5. Reservation & Booking Slot Hold
     if re.search(r"(?:book\s*(?:appointment|session|slot)|reserve\s*space|lock\s*my\s*date|schedule\s*meeting|any\s*slot\s*for\s*tomorrow)", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="RESERVE_APPOINTMENT",
             lead_tier="HOT",
             urgency_score=9,
@@ -164,27 +242,45 @@ def fast_path_classify(
             tokens_consumed=0,
             latency_ms=max(1.5, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="reserve_appointment",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
-    # 4. Price & Catalog Inquiry
+    # 6. Price & Catalog Inquiry
     if re.search(r"(?:how\s*much|wetin\s*be\s*the\s*price|price\s*dey|give\s*me\s*discount|abeg\s*reduce\s*small|last\s*price|dm\s*price|catalog)", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="PRICE_INQUIRY",
             lead_tier="WARM",
             urgency_score=7,
             confidence=0.92,
             detected_dialect=dialect,
-            suggested_reply="Hello! Here is our SME wholesale price catalog:\n📦 *Grade A Premium Unit*: ₦24,500 / carton\n📦 *Bulk Order (5+ cartons)*: ₦22,000 / carton + Free Ikeja/Lekki dispatch\n\nHow many cartons you wan make we pack for you today?",
+            suggested_reply=None,  # Delegated to ResponseOrchestrator for live PostgreSQL catalog pricing
             action="SHOW_PRODUCT_CATALOG",
             extracted_entities=entities,
             tokens_consumed=0,
             latency_ms=max(1.5, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="price_inquiry",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
-    # 5. Live Agent Desk Escalation
+    # 7. Live Agent Desk Escalation
     if re.search(r"(?:speak\s*to\s*human|talk\s*to\s*person|agent\s*abeg|customer\s*care|call\s*me|real\s*person)", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="HUMAN_AGENT_HANDOFF",
             lead_tier="WARM",
             urgency_score=8,
@@ -196,11 +292,20 @@ def fast_path_classify(
             tokens_consumed=0,
             latency_ms=max(1.5, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="human_agent_handoff",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
-    # 6. Greeting Engagement
+    # 8. Greeting Engagement
     if re.search(r"\b(?:how\s*far|wetin\s*dey|good\s*(?:morning|afternoon|evening)|hello|hi|hey|oya)\b", lower):
         latency = (time.perf_counter() - start_time) * 1000.0
-        return ClassificationOutput(
+        out = ClassificationOutput(
             intent="GREETING_ENGAGEMENT",
             lead_tier="WARM",
             urgency_score=5,
@@ -212,5 +317,20 @@ def fast_path_classify(
             tokens_consumed=0,
             latency_ms=max(1.5, latency),
         )
+        logger.info(
+            "stage_1_fast_path_matched",
+            rule_source="greeting_engagement",
+            intent=out.intent,
+            confidence=out.confidence,
+            latency_ms=out.latency_ms,
+            entities=out.extracted_entities,
+        )
+        return out
 
+    latency = (time.perf_counter() - start_time) * 1000.0
+    logger.info(
+        "stage_1_fast_path_missed",
+        latency_ms=round(latency, 2),
+        extracted_entities=entities,
+    )
     return None

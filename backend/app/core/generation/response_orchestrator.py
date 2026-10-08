@@ -57,17 +57,17 @@ class ResponseOrchestrator:
             or entities.get("category")
             or ""
         )
-        if not query_term and intent in ["PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG", "BROWSE_CATALOG"]:
-            # Fallback to scanning raw message
+        if not query_term:
+            # Fallback to scanning raw message for common commercial commodities
             raw_lower = raw_message.lower()
-            for token in ["rice", "sugar", "oil", "flour", "carton", "bag"]:
+            for token in ["rice", "sugar", "oil", "flour", "beans", "cement", "milk", "garri", "noodles", "carton", "bag"]:
                 if token in raw_lower:
                     query_term = token
                     break
 
         # 3. Perform catalog search if commercially relevant
         catalog_results: List[CoreOfferingDTO] = []
-        if intent in ["PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG", "BROWSE_CATALOG"] or query_term:
+        if intent in ["PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG", "BROWSE_CATALOG", "STOCK_AVAILABILITY_INQUIRY"] or query_term:
             catalog_results = await KnowledgeService.search_catalog_offerings(
                 merchant_id=merchant_id,
                 query=query_term,
@@ -88,7 +88,9 @@ class ResponseOrchestrator:
             "response_strategy_resolved",
             merchant_id=str(merchant_id),
             intent=intent,
+            query_term=query_term,
             catalog_count=catalog_count,
+            matching_skus=[item.sku for item in catalog_results[:5]],
             strategy=strategy.value,
         )
 
@@ -181,9 +183,34 @@ class ResponseOrchestrator:
         """Routes interactive list and button taps via Dual Interactive ID Scheme."""
         interactive_id = (interactive_id or "").strip()
 
+        # Resolve dynamic merchant name if default was supplied
+        if merchant_name == "Enterprise SME Store":
+            try:
+                from app.contexts.ingress.services import IngressService
+                provider_ctx = IngressService.get_cached_provider_context(str(merchant_id))
+                if provider_ctx and isinstance(provider_ctx, dict) and provider_ctx.get("verified_business_name"):
+                    merchant_name = provider_ctx["verified_business_name"]
+            except Exception:
+                pass
+
         # 1. Exploratory Catalog Tap: PRODUCT:{sku}
         if interactive_id.startswith("PRODUCT:"):
             sku = interactive_id.split(":", 1)[1].strip()
+            active_frame = await NegotiationFrameManager.get_frame(str(merchant_id), customer_phone)
+            if not active_frame:
+                active_frame = NegotiationFrame(
+                    merchant_id=str(merchant_id),
+                    phone_hash="",
+                    active_tool="ProductCatalog",
+                    intent="PRICE_INQUIRY",
+                    bound_slots={"sku": sku},
+                    missing_slots=[],
+                )
+            else:
+                active_frame.intent = "PRICE_INQUIRY"
+                active_frame.bound_slots["sku"] = sku
+            await NegotiationFrameManager.save_frame(str(merchant_id), customer_phone, active_frame)
+
             offering = await KnowledgeService.get_offering_by_sku(
                 merchant_id=merchant_id,
                 sku=sku,
@@ -215,11 +242,88 @@ class ResponseOrchestrator:
                         bound_slots={},
                         missing_slots=[],
                     )
+                else:
+                    # Explicit Intent Transition: Interaction type is transactional checkout
+                    active_frame.intent = "INSTANT_CHECKOUT_ORDER"
+                    active_frame.active_tool = "CheckoutOrderTool"
+                    if slot_name == "sku" and active_frame.bound_slots.get("sku") != slot_val:
+                        # Clear old slots when ordering a new SKU
+                        active_frame.bound_slots = {}
 
                 active_frame.bound_slots[slot_name] = slot_val
 
+                # If setting SKU slot, verify stock and pre-bind attributes from KnowledgeService or catalog manifest
+                if slot_name == "sku":
+                    offering = await KnowledgeService.get_offering_by_sku(
+                        merchant_id=merchant_id,
+                        sku=slot_val,
+                        session=session,
+                    )
+                    if offering:
+                        stock_qty = (
+                            offering.metadata.get("stock_quantity")
+                            if isinstance(getattr(offering, "metadata", None), dict)
+                            else None
+                        )
+                        if not offering.is_available or (stock_qty is not None and stock_qty <= 0):
+                            await NegotiationFrameManager.evict_frame(str(merchant_id), customer_phone)
+                            prompt = (
+                                f"Apologies, *{offering.title}* is currently out of stock.\n\n"
+                                f"Would you like to browse our available items or speak directly with our team?"
+                            )
+                            buttons = [
+                                {"id": "SHOW_CATALOG", "title": "View Catalog"},
+                                {"id": "AGENT_HANDOFF", "title": "Speak to Agent"},
+                            ]
+                            return ResponseFormatter.format_interactive_buttons(
+                                to_phone=customer_phone,
+                                body_text=prompt,
+                                buttons=buttons,
+                                strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
+                            )
+                        active_frame.bound_slots["sku"] = offering.sku
+                        active_frame.bound_slots["product_name"] = offering.title
+                        active_frame.bound_slots["unit_price_kobo"] = offering.price_kobo
+                        active_frame.bound_slots["in_stock"] = True
+                    else:
+                        from app.core.generation.tools import DEFAULT_COMMODITY_CATALOG
+                        catalog_to_check = catalog_manifest if catalog_manifest else DEFAULT_COMMODITY_CATALOG
+                        matched = [item for item in catalog_to_check if item.get("sku", "").upper() == str(slot_val).upper()]
+                        if matched:
+                            matched_item = matched[0]
+                            if matched_item.get("in_stock") is False:
+                                await NegotiationFrameManager.evict_frame(str(merchant_id), customer_phone)
+                                item_name = matched_item.get("name") or slot_val.replace("_", " ").title()
+                                prompt = (
+                                    f"Apologies, *{item_name}* is currently out of stock.\n\n"
+                                    f"Would you like to browse our available items or speak directly with our team?"
+                                )
+                                buttons = [
+                                    {"id": "SHOW_CATALOG", "title": "View Catalog"},
+                                    {"id": "AGENT_HANDOFF", "title": "Speak to Agent"},
+                                ]
+                                return ResponseFormatter.format_interactive_buttons(
+                                    to_phone=customer_phone,
+                                    body_text=prompt,
+                                    buttons=buttons,
+                                    strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
+                                )
+                            active_frame.bound_slots["sku"] = matched_item["sku"]
+                            active_frame.bound_slots["product_name"] = matched_item["name"]
+                            active_frame.bound_slots["unit_price_kobo"] = matched_item["price_kobo"]
+                            active_frame.bound_slots["in_stock"] = True
+                        else:
+                            active_frame.bound_slots["sku"] = slot_val
+
+                if not catalog_manifest:
+                    try:
+                        from app.contexts.ingress.services import IngressService
+                        catalog_manifest = IngressService.get_cached_catalog_manifest(str(merchant_id))
+                    except Exception:
+                        pass
+
                 tool_res = await get_local_tool_dispatcher().evaluate(
-                    intent=active_frame.intent,
+                    intent="INSTANT_CHECKOUT_ORDER",
                     slots=active_frame.bound_slots,
                     catalog_manifest=catalog_manifest,
                 )
@@ -227,6 +331,8 @@ class ResponseOrchestrator:
                 if tool_res:
                     if tool_res.status == ToolStatus.NEEDS_CLARIFICATION:
                         active_frame.missing_slots = tool_res.missing_slots
+                        if tool_res.bound_slots:
+                            active_frame.bound_slots.update(tool_res.bound_slots)
                         await NegotiationFrameManager.save_frame(str(merchant_id), customer_phone, active_frame)
                         prompt = tool_res.clarification.prompt_text if tool_res.clarification else "Please choose an option."
                         buttons = tool_res.clarification.buttons if tool_res.clarification else None
@@ -257,7 +363,7 @@ class ResponseOrchestrator:
                             f"Total Amount: *{total_naira}* (10-minute anti-ghosting hold).\n\n"
                             f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
                             f"Bank: *Moniepoint MFB*\n"
-                            f"Account Name: *Enterprise SME Store*\n"
+                            f"Account Name: *{merchant_name}*\n"
                             f"Account Number: *9031842901*\n\n"
                             f"Once transfer clear, receipt go land here sharp sharp!"
                         )
@@ -284,8 +390,22 @@ class ResponseOrchestrator:
                             strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
                         )
 
-        # 3. Action: SHOW_CATALOG / BROWSE_CATALOG
-        if interactive_id in ["SHOW_CATALOG", "BROWSE_CATALOG"]:
+        # 3. Action: SHOW_CATALOG / BROWSE_CATALOG / INTENT:SHOW_CATALOG
+        if interactive_id in ["SHOW_CATALOG", "BROWSE_CATALOG", "INTENT:SHOW_CATALOG"]:
+            active_frame = await NegotiationFrameManager.get_frame(str(merchant_id), customer_phone)
+            if not active_frame:
+                active_frame = NegotiationFrame(
+                    merchant_id=str(merchant_id),
+                    phone_hash="",
+                    active_tool="ProductCatalog",
+                    intent="SHOW_PRODUCT_CATALOG",
+                    bound_slots={},
+                    missing_slots=[],
+                )
+            else:
+                active_frame.intent = "SHOW_PRODUCT_CATALOG"
+            await NegotiationFrameManager.save_frame(str(merchant_id), customer_phone, active_frame)
+
             offerings = await KnowledgeService.search_catalog_offerings(
                 merchant_id=merchant_id,
                 query="",
@@ -297,16 +417,35 @@ class ResponseOrchestrator:
                 query_title="Catalog",
             )
 
-        # 4. Action: AGENT_HANDOFF / SPEAK_TO_AGENT
-        if interactive_id in ["AGENT_HANDOFF", "SPEAK_TO_AGENT"]:
+        # 4. Action: AGENT_HANDOFF / SPEAK_TO_AGENT / INTENT:AGENT_HANDOFF
+        if interactive_id in ["AGENT_HANDOFF", "SPEAK_TO_AGENT", "INTENT:AGENT_HANDOFF"]:
+            active_frame = await NegotiationFrameManager.get_frame(str(merchant_id), customer_phone)
+            if not active_frame:
+                active_frame = NegotiationFrame(
+                    merchant_id=str(merchant_id),
+                    phone_hash="",
+                    active_tool="DeskService",
+                    intent="DISPATCH_AGENT_HANDOFF",
+                    bound_slots={},
+                    missing_slots=[],
+                )
+            else:
+                active_frame.intent = "DISPATCH_AGENT_HANDOFF"
+            await NegotiationFrameManager.save_frame(str(merchant_id), customer_phone, active_frame)
+
             return ResponseFormatter.format_standard_text(
                 to_phone=customer_phone,
                 text="A human agent will be with you shortly. Please hold on.",
                 strategy=ResponseStrategy.AGENT_HANDOFF,
             )
 
-        return ResponseFormatter.format_standard_text(
+        # Remove redundant fallback greeting: return helpful catalog options instead
+        return ResponseFormatter.format_interactive_buttons(
             to_phone=customer_phone,
-            text=f"Welcome to {merchant_name}! How may we help you?",
-            strategy=ResponseStrategy.STANDARD_TEXT,
+            body_text=f"We couldn't find that item in current stock for {merchant_name}. Please choose an option below:",
+            buttons=[
+                {"id": "SHOW_CATALOG", "title": "View Catalog"},
+                {"id": "AGENT_HANDOFF", "title": "Speak to Agent"},
+            ],
+            strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
         )

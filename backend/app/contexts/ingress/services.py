@@ -126,22 +126,18 @@ class IngressService:
         customer_phone: str,
         customer_name: Optional[str] = None,
     ) -> Conversation:
-        """Resolves active conversation within 24h sliding inactivity window or spawns a new one."""
         from datetime import datetime, timezone, timedelta
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-
         query = await session.execute(
             select(Conversation)
             .where(
                 Conversation.merchant_id == merchant_id,
                 Conversation.customer_phone == customer_phone,
-                Conversation.updated_at >= cutoff,
             )
             .order_by(desc(Conversation.updated_at))
             .limit(1)
         )
         conversation = query.scalar_one_or_none()
-
         if not conversation:
             conversation = Conversation(
                 merchant_id=merchant_id,
@@ -154,11 +150,14 @@ class IngressService:
             session.add(conversation)
             await session.flush()
         else:
+            # Returning customer outside 24h window: reset funnel session & update timestamp
+            if conversation.updated_at < cutoff:
+                conversation.funnel_stage = "discovery"
+                conversation.is_open = True
             if customer_name and conversation.customer_name != customer_name:
                 conversation.customer_name = customer_name
             conversation.updated_at = datetime.now(timezone.utc)
             await session.flush()
-
         return conversation
 
     @staticmethod

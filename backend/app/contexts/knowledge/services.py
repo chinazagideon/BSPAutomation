@@ -120,8 +120,8 @@ def _entry_to_dto(entry: KnowledgeEntry) -> CoreOfferingDTO:
         offering_type = OfferingType.PHYSICAL_PRODUCT
 
     is_available = meta.get("is_available", meta.get("in_stock", True))
-    stock_qty = meta.get("stock_quantity", 1)
-    if stock_qty <= 0:
+    stock_qty = meta.get("stock_quantity")
+    if stock_qty is not None and stock_qty <= 0 and offering_type == OfferingType.PHYSICAL_PRODUCT:
         is_available = False
 
     return CoreOfferingDTO(
@@ -382,7 +382,7 @@ class KnowledgeService:
                     "offering_type": item["offering_type"],
                     "unit": item.get("unit", "unit"),
                     "weight": item.get("weight"),
-                    "stock_quantity": item.get("stock_quantity", 0),
+                    "stock_quantity": item.get("stock_quantity", 50 if item.get("is_available", True) else 0),
                 },
                 is_active=True,
             )

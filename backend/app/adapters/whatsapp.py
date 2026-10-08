@@ -3,7 +3,7 @@
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
-from app.adapters.base import WhatsAppBSPPort
+from app.adapters.base import WhatsAppBSPPort, CarouselMessage
 from app.core.config import settings
 from app.core.egress import AuditedHttpClient
 
@@ -214,6 +214,46 @@ class MetaCloudWhatsAppAdapter(WhatsAppBSPPort):
             "status": "SENT",
         }
 
+    async def send_interactive_carousel(
+        self,
+        to_phone: str,
+        carousel: CarouselMessage,
+        phone_number_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        cards = [
+            {
+                "card_index": idx,
+                "type": "cta_url",
+                "header": {
+                    "type": card.header_type,
+                    card.header_type: {"link": card.media_url},
+                },
+                "body": {"text": card.body_text},
+                "action": {
+                    "name": "cta_url",
+                    "parameters": {"display_text": card.cta_text, "url": card.cta_url},
+                },
+            }
+            for idx, card in enumerate(carousel.cards)
+        ]
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_phone,
+            "type": "interactive",
+            "interactive": {
+                "type": "carousel",
+                "body": {"text": carousel.body_text},
+                "action": {"cards": cards},
+            },
+        }
+        msg_id = await self._execute_meta_egress(payload, phone_number_id=phone_number_id)
+        return {
+            "message_id": msg_id,
+            "to": to_phone,
+            "status": "SENT",
+        }
+
 
 class MockWhatsAppBSPAdapter(WhatsAppBSPPort):
     """Local Dev & CI Mock Simulator for WhatsApp BSP interactions."""
@@ -309,6 +349,21 @@ class MockWhatsAppBSPAdapter(WhatsAppBSPPort):
             "body": body_text,
             "button_title": button_title,
             "sections": sections,
+            "status": "DELIVERED",
+            "is_mock": True,
+        })
+
+    async def send_interactive_carousel(
+        self,
+        to_phone: str,
+        carousel: CarouselMessage,
+        phone_number_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._record({
+            "message_id": f"wamid.mock.carousel.{len(self.sent_messages) + 1}",
+            "to": to_phone,
+            "body": carousel.body_text,
+            "cards": [c.model_dump() for c in carousel.cards],
             "status": "DELIVERED",
             "is_mock": True,
         })

@@ -128,6 +128,50 @@ DEFAULT_COMMODITY_CATALOG = [
         "in_stock": True,
         "stock_quantity": 25,
     },
+    {
+        "sku": "RICE_MAMA_GOLD_25KG",
+        "name": "Mama Gold Rice 25kg",
+        "category": "rice",
+        "unit": "bag",
+        "weight": "25kg",
+        "price_naira": 41000,
+        "price_kobo": 4100000,
+        "in_stock": True,
+        "stock_quantity": 40,
+    },
+    {
+        "sku": "RICE_ROYAL_STALLION_50KG",
+        "name": "Royal Stallion Rice 50kg",
+        "category": "rice",
+        "unit": "bag",
+        "weight": "50kg",
+        "price_naira": 80000,
+        "price_kobo": 8000000,
+        "in_stock": True,
+        "stock_quantity": 15,
+    },
+    {
+        "sku": "OIL_DEVONS_KING_25L",
+        "name": "Devon's King Vegetable Oil 25L",
+        "category": "oil",
+        "unit": "jerrycan",
+        "weight": "25L",
+        "price_naira": 58000,
+        "price_kobo": 5800000,
+        "in_stock": True,
+        "stock_quantity": 20,
+    },
+    {
+        "sku": "FLOUR_GOLDEN_PENNY_50KG",
+        "name": "Golden Penny Flour 50kg",
+        "category": "flour",
+        "unit": "bag",
+        "weight": "50kg",
+        "price_naira": 62000,
+        "price_kobo": 6200000,
+        "in_stock": False,
+        "stock_quantity": 0,
+    },
 ]
 
 ZONE_DELIVERY_FEES_KOBO = {
@@ -204,13 +248,23 @@ class CheckoutOrderTool(LocalTool):
         matched_sku_item: Optional[Dict[str, Any]] = None
 
         if raw_sku:
-            # Explicit SKU provided (e.g. from button ID SET_SLOT:sku:...)
-            matched = [item for item in catalog if item["sku"].upper() == str(raw_sku).upper()]
-            if matched:
-                matched_sku_item = matched[0]
-                bound["sku"] = matched_sku_item["sku"]
-                bound["product_name"] = matched_sku_item["name"]
-                bound["unit_price_kobo"] = matched_sku_item["price_kobo"]
+            # Check if attributes are already bound
+            if bound.get("product_name") and bound.get("unit_price_kobo"):
+                matched_sku_item = {
+                    "sku": str(raw_sku),
+                    "name": bound["product_name"],
+                    "price_kobo": bound["unit_price_kobo"],
+                    "in_stock": bound.get("in_stock", True),
+                }
+            else:
+                # Explicit SKU provided (e.g. from button ID SET_SLOT:sku:...)
+                matched = [item for item in catalog if item["sku"].upper() == str(raw_sku).upper()]
+                if matched:
+                    matched_sku_item = matched[0]
+                    bound["sku"] = matched_sku_item["sku"]
+                    bound["product_name"] = matched_sku_item["name"]
+                    bound["unit_price_kobo"] = matched_sku_item["price_kobo"]
+                    bound["in_stock"] = matched_sku_item.get("in_stock", True)
 
         if not matched_sku_item and product_query:
             # Fuzzy match against catalog
