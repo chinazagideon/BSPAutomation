@@ -220,6 +220,7 @@ async def process_incoming_webhook_job(
             merchant_id=merchant_id,
             event_id=event_id,
             raw_payload=raw_payload,
+            provider_slug=ctx.get("provider_slug") if ctx else None,
         )
 
 
@@ -228,6 +229,7 @@ async def _execute_webhook_processing(
     merchant_id: str,
     event_id: Optional[str] = None,
     raw_payload: Optional[Dict[str, Any]] = None,
+    provider_slug: Optional[str] = None,
 ) -> Dict[str, Any]:
     print(f"[Worker] Processing incoming webhook for merchant {merchant_id}, event: {event_id}")
     from app.contexts.ingress.models import WebhookEvent, Message
@@ -239,7 +241,14 @@ async def _execute_webhook_processing(
     from app.contexts.desk.schemas import ContextInjectionRequest
 
     http_client = ctx.get("audited_http_client") if ctx else None
-    whatsapp = get_whatsapp_bsp_adapter(http_client=http_client)
+    resolved_provider_slug = provider_slug or (ctx.get("provider_slug") if ctx else None)
+
+    # Sync runtime NLU stage controller flags from shared SandboxStateStore (ADR-0047)
+    try:
+        from app.sandbox.state import get_sandbox_store
+        await get_sandbox_store().get_nlu_controller()
+    except Exception:
+        pass
 
     async with tenant_session_scope(merchant_id) as session:
         payload = raw_payload
@@ -252,24 +261,47 @@ async def _execute_webhook_processing(
             webhook_event = res.scalar_one_or_none()
             if webhook_event:
                 payload = webhook_event.raw_payload
+                if not resolved_provider_slug:
+                    resolved_provider_slug = webhook_event.provider
 
         if not payload:
             return {"status": "SKIPPED_NO_PAYLOAD"}
 
-        # 1. Unpack Meta Payload
-        unpacked = IngressService.unpack_meta_payload(payload)
-        if not unpacked["has_message"]:
+        # Dynamic BSP adapter resolution governed by incoming provider (ADR-0047)
+        whatsapp = get_whatsapp_bsp_adapter(
+            http_client=http_client,
+            provider_slug=resolved_provider_slug,
+        )
+
+        # 1. Unpack & Normalize Provider Payload (ADR-0047)
+        inbound_envelope = IngressService.unpack_inbound_payload(payload, provider_slug=resolved_provider_slug)
+        if inbound_envelope.get("is_status_update"):
+            if webhook_event:
+                webhook_event.processed_at = datetime.now(timezone.utc)
+            try:
+                from app.sandbox.state import get_sandbox_store
+                await get_sandbox_store().broadcast_event("delivery_status_update", inbound_envelope)
+            except Exception:
+                pass
+            return {
+                "status": "PROCESSED_STATUS_UPDATE",
+                "delivery_status": inbound_envelope.get("status_value"),
+                "message_id": inbound_envelope.get("status_message_id"),
+            }
+
+        if not inbound_envelope["has_message"]:
             if webhook_event:
                 webhook_event.processed_at = datetime.now(timezone.utc)
             return {"status": "SKIPPED_NON_MESSAGE_EVENT"}
 
-        sender_phone = unpacked["sender_phone"]
-        customer_name = unpacked["customer_name"]
-        raw_text = unpacked["text"]
-        is_audio = unpacked["is_audio"]
-        media_id = unpacked["media_id"]
-        is_interactive = unpacked.get("is_interactive", False)
-        interactive_id = unpacked.get("interactive_id")
+        sender_phone = inbound_envelope["sender_phone"]
+        customer_name = inbound_envelope["customer_name"]
+        raw_text = inbound_envelope["text"]
+        is_audio = inbound_envelope["is_audio"]
+        media_id = inbound_envelope["media_id"]
+        is_interactive = inbound_envelope.get("is_interactive", False)
+        interactive_id = inbound_envelope.get("interactive_id")
+
 
         # Debounce rapid burst messages (ADR-0043 Point 8)
         if not is_interactive and not is_audio and raw_text:
@@ -513,12 +545,12 @@ async def _execute_webhook_processing(
                             loc_str = f" for delivery to {tool_res.bound_slots.get('delivery_zone', 'your address')}" if tool_res.bound_slots.get("fulfillment_type") == "EXPRESS_DELIVERY" else " for warehouse self-pickup"
                             tool_reply_text = (
                                 f"Sharp! We don reserve your order ({tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}){loc_str}.\n"
-                                f"Total Amount: *{total_naira}* (10-minute anti-ghosting hold).\n\n"
+                                f"Total Amount: *{total_naira}* (unpaid order valid for 10 minutes).\n\n"
                                 f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
                                 f"Bank: *Moniepoint MFB*\n"
                                 f"Account Name: *{waba_name}*\n"
                                 f"Account Number: *Allocated on hold confirmation*\n\n"
-                                f"Once transfer clear, receipt go land here sharp sharp!"
+                                f"Once payment clear, receipt go land here sharp sharp!"
                             )
                             tool_action = "GENERATE_VIRTUAL_NUBAN_HOLD"
                         elif tool_res.status == ToolStatus.OUT_OF_STOCK:
@@ -625,7 +657,31 @@ async def _execute_webhook_processing(
             await session.commit()
             if webhook_event:
                 webhook_event.processed_at = datetime.now(timezone.utc)
+            try:
+                from app.sandbox.state import get_sandbox_store
+                current_frame = await NegotiationFrameManager.get_frame(merchant_id, sender_phone)
+                await get_sandbox_store().append_nlu_trace({
+                    "merchant_id": merchant_id,
+                    "customer_phone": sender_phone,
+                    "customer_name": customer_name,
+                    "raw_text": raw_text,
+                    "sanitized_text": sanitized_text,
+                    "routing_source": "NEGOTIATION_FRAME",
+                    "intent": inbound_intent,
+                    "lead_tier": "HOT",
+                    "urgency_score": 9,
+                    "confidence": 1.0,
+                    "detected_dialect": "Interactive / Slot-Binding",
+                    "action": tool_action,
+                    "tokens_consumed": 0,
+                    "latency_ms": 2.1,
+                    "active_frame": current_frame.model_dump(mode="json") if current_frame else None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
             return {"status": "PROCESSED_VIA_NEGOTIATION_FRAME", "action": tool_action}
+
 
         # 6C. Execute Cascading NLU Pipeline (Clean Slate)
         nlu_resp = await CascadingNLUPipeline.process(
@@ -764,12 +820,39 @@ async def _execute_webhook_processing(
         if webhook_event:
             webhook_event.processed_at = datetime.now(timezone.utc)
 
+        try:
+            from app.sandbox.state import get_sandbox_store
+            current_frame = await NegotiationFrameManager.get_frame(merchant_id, sender_phone)
+            await get_sandbox_store().append_nlu_trace({
+                "merchant_id": merchant_id,
+                "customer_phone": sender_phone,
+                "customer_name": customer_name,
+                "raw_text": raw_text,
+                "sanitized_text": sanitized_text,
+                "routing_source": nlu_resp.routing_source,
+                "intent": nlu_resp.intent,
+                "lead_tier": nlu_resp.lead_tier,
+                "urgency_score": nlu_resp.urgency_score,
+                "confidence": nlu_resp.confidence,
+                "detected_dialect": nlu_resp.detected_dialect,
+                "action": nlu_resp.action,
+                "extracted_entities": nlu_resp.extracted_entities,
+                "tokens_consumed": nlu_resp.tokens_consumed,
+                "latency_ms": nlu_resp.latency_ms,
+                "strategy": envelope.strategy.value if envelope else None,
+                "active_frame": current_frame.model_dump(mode="json") if current_frame else None,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
+
         return {
             "status": "PROCESSED",
             "merchant_id": merchant_id,
             "intent": nlu_resp.intent,
             "routing_source": nlu_resp.routing_source,
         }
+
 
 
 async def reconcile_payment_settlement_job(

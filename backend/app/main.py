@@ -26,6 +26,8 @@ from app.contexts.reservations.router import router as reservations_router
 from app.contexts.desk.router import router as desk_router
 from app.contexts.compliance.router import router as compliance_router
 from app.contexts.knowledge.router import router as knowledge_router
+from app.sandbox.router import router as sandbox_router
+
 
 
 @asynccontextmanager
@@ -169,6 +171,9 @@ app.include_router(reservations_router, prefix=settings.API_V1_PREFIX)
 app.include_router(desk_router, prefix=settings.API_V1_PREFIX)
 app.include_router(compliance_router, prefix=settings.API_V1_PREFIX)
 app.include_router(knowledge_router, prefix=settings.API_V1_PREFIX)
+if settings.ENVIRONMENT in ["development", "test"]:
+    app.include_router(sandbox_router, prefix=settings.API_V1_PREFIX)
+
 
 
 @app.get("/api/health", tags=["Health"], response_model=ApiResponse[dict])

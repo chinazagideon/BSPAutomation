@@ -238,7 +238,12 @@ class GeminiFlashAdapter(LLMProviderPort):
 
 
 class MockLLMAdapter(LLMProviderPort):
-    """Local Dev & CI Mock Simulator for Gemini 3.7 Flash LLM."""
+    """Context-Aware Local Dev, Sandbox & CI Simulator for Gemini 3.7 Flash LLM (ADR-0044, ADR-0047).
+
+    Synthesizes conversational replies grounded in the injected Catalog Manifest,
+    Provider Context Manifest, and recent customer turns so multi-turn conversational
+    fluency can be tested 100% locally without external API keys.
+    """
 
     async def generate_chat_completion(
         self,
@@ -247,22 +252,81 @@ class MockLLMAdapter(LLMProviderPort):
     ) -> ClassificationOutput:
         start_time = time.perf_counter()
         lower = prompt.lower()
+        sys_lower = (system_instruction or "").lower()
 
-        # Nuanced LLM reasoning simulation
+        # Extract customer message from prompt if formatted with "Customer Message:"
+        msg_match = re.search(r"customer\s*message\s*:\s*(.+)", prompt, flags=re.IGNORECASE | re.DOTALL)
+        customer_msg = msg_match.group(1).strip() if msg_match else prompt.strip()
+        msg_lower = customer_msg.lower()
+
+        # Detect dialect
+        is_pidgin = bool(re.search(r"\b(abeg|wetin|no\s*wahala|how\s*far|una|dey|fit|wan|oya|comot|shinkafa|biko)\b", msg_lower))
+        dialect = "Nigerian Pidgin" if is_pidgin else "Nigerian Commercial Slang"
+
+        # Extract merchant name from system_instruction if present
+        merchant_match = re.search(r"verified\s*merchant\s*:\s*([^\n]+)", system_instruction or "", flags=re.IGNORECASE)
+        merchant_name = merchant_match.group(1).strip() if merchant_match else "our store"
+
         intent = "COMPLEX_CONSULTATION"
         lead_tier = "WARM"
         urgency_score = 7
-        dialect = "Nigerian Pidgin" if "abeg" in lower or "wetin" in lower else "Nigerian Commercial Slang"
-        suggested_reply = (
-            "No wahala! I understand what you need for your business setup. "
-            "Our senior product consultant in Lagos is reviewing your custom requirements right now."
-        )
+        action = "NURTURE_OR_ESCALATE_TO_AGENT"
+        extracted_entities: Dict[str, Any] = {"topic": "B2B SME Commercial Inquiry"}
 
         if "baking" in lower or "bakery" in lower or "flour" in lower:
             suggested_reply = "Welcome! We have industrial bakery ovens and Grade A baking flour ready for dispatch across Ikeja and Ibadan."
             intent = "VERTICAL_SPECIFIC_INQUIRY"
             lead_tier = "HOT"
             urgency_score = 8
+        elif any(w in msg_lower for w in ["rice", "sugar", "oil", "beans", "garri", "cement", "barber", "haircut", "massage", "facial", "inverter", "laptop", "macbook", "starlink", "battery"]):
+            # Grounded catalog inquiry
+            matched_prod = next(
+                (w for w in ["rice", "sugar", "oil", "beans", "garri", "cement", "barber", "haircut", "massage", "facial", "inverter", "laptop", "macbook", "starlink", "battery"] if w in msg_lower),
+                "product",
+            )
+            intent = "PRICE_INQUIRY"
+            lead_tier = "HOT"
+            urgency_score = 8
+            action = "SHOW_PRODUCT_CATALOG"
+            extracted_entities = {"product": matched_prod, "topic": "Catalog Grounded Inquiry"}
+            if is_pidgin:
+                suggested_reply = (
+                    f"No wahala! For {merchant_name}, we get beta {matched_prod} for ground right now. "
+                    f"Check the options and prices below make you pick the one wey fit your budget!"
+                )
+            else:
+                suggested_reply = (
+                    f"Welcome to {merchant_name}! Here are our current verified options and pricing for {matched_prod}:"
+                )
+        elif any(w in msg_lower for w in ["delivery", "shipping", "dispatch", "how long", "location", "where una dey", "operating hours", "open"]):
+            intent = "LOGISTICS_OR_POLICY_INQUIRY"
+            lead_tier = "WARM"
+            urgency_score = 7
+            action = "ANSWER_POLICY_QUERY"
+            if is_pidgin:
+                suggested_reply = (
+                    f"No wahala! {merchant_name} dey open Mon-Sat (8:00 AM - 6:00 PM WAT). "
+                    f"We dey run express same-day delivery across Lagos Mainland, Ikeja, Lekki, and Abuja once your Moniepoint transfer clear!"
+                )
+            else:
+                suggested_reply = (
+                    f"{merchant_name} operates Mon-Sat (8:00 AM - 6:00 PM WAT) with same-day express dispatch across Lagos Mainland, Ikeja, Lekki, and Abuja upon payment confirmation."
+                )
+        elif any(w in msg_lower for w in ["agent", "human", "manager", "complain", "issue", "problem", "refund"]):
+            intent = "HUMAN_AGENT_HANDOFF"
+            lead_tier = "HOT"
+            urgency_score = 9
+            action = "DISPATCH_AGENT_HANDOFF"
+            suggested_reply = (
+                "No wahala at all! I don escalate your chat with full context to our live support desk so you no need repeat yourself. An agent go join you now."
+                if is_pidgin else
+                "I have escalated your conversation with a complete context summary to our live support desk. A specialist will assist you shortly."
+            )
+        else:
+            suggested_reply = (
+                "No wahala! I understand what you need for your business setup. "
+                "Our senior product consultant in Lagos is reviewing your custom requirements right now."
+            )
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -273,11 +337,12 @@ class MockLLMAdapter(LLMProviderPort):
             confidence=0.95,
             detected_dialect=dialect,
             suggested_reply=suggested_reply,
-            action="NURTURE_OR_ESCALATE_TO_AGENT",
-            extracted_entities={"topic": "B2B SME Commercial Inquiry"},
+            action=action,
+            extracted_entities=extracted_entities,
             tokens_consumed=380,
             latency_ms=max(250.0, latency_ms),
         )
+
 
 
 def get_llm_provider_adapter() -> LLMProviderPort:

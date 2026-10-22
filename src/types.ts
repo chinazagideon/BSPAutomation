@@ -3,7 +3,7 @@ export type MessageSender = 'user' | 'bot' | 'agent' | 'system';
 export interface InteractiveButton {
   id: string;
   title: string;
-  payload: string;
+  payload?: string;
 }
 
 export interface InteractiveListRow {
@@ -17,15 +17,73 @@ export interface InteractiveListSection {
   rows: InteractiveListRow[];
 }
 
+export interface CarouselCardItem {
+  header_type: 'image' | 'video';
+  media_url: string;
+  body_text: string;
+  cta_text: string;
+  cta_url: string;
+}
+
+export interface SandboxMerchant {
+  id: string;
+  business_name: string;
+  slug: string;
+  whatsapp_business_phone: string;
+  whatsapp_phone_number_id: string;
+}
+
+export interface SandboxFaultProfile {
+  force_rate_limit_429: boolean;
+  force_upstream_500: boolean;
+  simulate_delivery_failure: boolean;
+  enforce_24h_window: boolean;
+  clock_offset_hours: number;
+  duplicate_webhook_replay: boolean;
+  corrupt_hmac_signature: boolean;
+  network_latency_ms: number;
+}
+
+export interface SandboxNluController {
+  use_fast_path: boolean;
+  fast_path_confidence_threshold: number;
+  use_custom_model: boolean;
+  custom_model_confidence_threshold: number;
+  use_llm_escalation: boolean;
+  active_bsp_provider: string;
+}
+
+export interface SandboxWindowState {
+  is_open: boolean;
+  elapsed_hours: number;
+  remaining_seconds: number;
+  remaining_hours: number;
+  clock_offset_hours: number;
+  enforce_24h_window: boolean;
+}
+
+export interface SandboxNegotiationFrame {
+  merchant_id: string;
+  phone_hash: string;
+  active_tool: string;
+  intent: string;
+  bound_slots: Record<string, any>;
+  missing_slots: string[];
+  pending_offer?: Record<string, any> | null;
+}
+
 export interface ChatMessage {
   id: string;
   sender: MessageSender;
   text: string;
   timestamp: string;
-  status?: 'sent' | 'delivered' | 'read';
-  interactiveType?: 'buttons' | 'list' | 'payment_link' | 'receipt_card' | 'hold_timer';
+  status?: 'sent' | 'delivered' | 'read' | 'failed';
+  interactiveType?: 'buttons' | 'list' | 'carousel' | 'template' | 'media' | 'payment_link' | 'receipt_card' | 'hold_timer' | 'voice_note' | 'system_alert';
+  headerText?: string;
+  buttonTitle?: string;
   buttons?: InteractiveButton[];
   listSections?: InteractiveListSection[];
+  carouselCards?: CarouselCardItem[];
   metadata?: {
     intent?: string;
     leadTier?: 'HOT' | 'WARM' | 'COLD';
@@ -36,9 +94,13 @@ export interface ChatMessage {
     accountNumber?: string;
     bankName?: string;
     isFastPath?: boolean;
+    routingSource?: string;
     latencyMs?: number;
+    strategy?: string;
+    provider?: string;
   };
 }
+
 
 export interface WebhookLog {
   id: string;
@@ -49,9 +111,10 @@ export interface WebhookLog {
   signatureVerified: boolean;
   httpStatus: number;
   ackLatencyMs: number;
-  workerStatus: 'queued' | 'processing' | 'completed' | 'retrying';
+  workerStatus: 'queued' | 'processing' | 'completed' | 'retrying' | 'rejected';
   workerLatencyMs: number;
 }
+
 
 export interface LeadScore {
   phone: string;

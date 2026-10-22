@@ -9,8 +9,113 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
+const PYTHON_API_URL = process.env.PYTHON_API_URL || "http://localhost:8001";
 
 app.use(express.json());
+
+// -------------------------------------------------------------
+// REVERSE PROXY TO PYTHON FASTAPI BACKEND (/api/v1/*) (ADR-0047)
+// -------------------------------------------------------------
+app.use("/api/v1", async (req, res) => {
+  const targetUrl = `${PYTHON_API_URL}/api/v1${req.url}`;
+
+  // Handle Server-Sent Events (SSE) streaming for /api/v1/sandbox/stream
+  if (req.url.startsWith("/sandbox/stream")) {
+    let clientClosed = false;
+    const controller = new AbortController();
+    req.on("close", () => {
+      clientClosed = true;
+      controller.abort();
+    });
+
+    try {
+      const upstream = await fetch(targetUrl, {
+        headers: { Accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+
+      if (upstream.ok && upstream.body) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders?.();
+
+        const reader = upstream.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || clientClosed) break;
+          res.write(decoder.decode(value, { stream: true }));
+        }
+        if (!clientClosed && !res.writableEnded) {
+          res.end();
+        }
+        return;
+      }
+    } catch {
+      // Python backend unreachable or client aborted
+    }
+
+    // Fallback: If Python backend is not running, not ready, or returns non-200,
+    // establish SSE heartbeat locally so React frontend does not disconnect or fail.
+    if (clientClosed || res.writableEnded) return;
+
+    if (!res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders?.();
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "connected", mode: "fallback" })}\n\n`);
+    const timer = setInterval(() => {
+      if (clientClosed || res.writableEnded) {
+        clearInterval(timer);
+        return;
+      }
+      res.write(`: keep-alive\n\n`);
+    }, 15000);
+    req.on("close", () => clearInterval(timer));
+    return;
+  }
+
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": req.headers["content-type"] || "application/json",
+    };
+    if (req.headers["authorization"]) headers["Authorization"] = String(req.headers["authorization"]);
+    if (req.headers["x-hub-signature-256"]) headers["X-Hub-Signature-256"] = String(req.headers["x-hub-signature-256"]);
+    if (req.headers["x-termii-signature"]) headers["X-Termii-Signature"] = String(req.headers["x-termii-signature"]);
+
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body: ["GET", "HEAD"].includes(req.method) ? undefined : JSON.stringify(req.body),
+    });
+
+    if (res.headersSent) return;
+
+    const contentType = upstream.headers.get("content-type") || "";
+    const text = await upstream.text();
+    res.status(upstream.status);
+    if (contentType.includes("application/json")) {
+      try {
+        res.json(JSON.parse(text));
+      } catch {
+        res.send(text);
+      }
+    } else {
+      res.send(text);
+    }
+  } catch (err: any) {
+    if (res.headersSent) return;
+    res.status(502).json({
+      status: "BACKEND_UNREACHABLE",
+      detail: `Python FastAPI backend at ${PYTHON_API_URL} is unreachable: ${err?.message || err}`,
+    });
+  }
+});
+
 
 // Initialize Gemini SDK with telemetry header
 const getGeminiClient = () => {

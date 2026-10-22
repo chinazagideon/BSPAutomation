@@ -32,92 +32,34 @@ _IN_MEMORY_FASTPATH_DICT_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 class IngressService:
     @staticmethod
-    def extract_phone_number_id(payload: Dict[str, Any]) -> Optional[str]:
-        """Extracts external WhatsApp phone_number_id from raw Meta Cloud webhook payload."""
-        if "entry" in payload and isinstance(payload["entry"], list) and len(payload["entry"]) > 0:
-            entry = payload["entry"][0]
-            changes = entry.get("changes", [])
-            if changes and isinstance(changes, list) and len(changes) > 0:
-                value = changes[0].get("value", {})
-                metadata = value.get("metadata", {})
-                if "phone_number_id" in metadata:
-                    return str(metadata["phone_number_id"])
-        return payload.get("phone_number_id")
+    def extract_phone_number_id(payload: Dict[str, Any], provider_slug: Optional[str] = None) -> Optional[str]:
+        """Extracts external WhatsApp phone_number_id or routing key from provider webhook payload."""
+        from app.adapters.whatsapp import get_whatsapp_bsp_adapter
+        adapter = get_whatsapp_bsp_adapter(provider_slug=provider_slug)
+        return adapter.extract_phone_number_id(payload)
 
     @staticmethod
-    def unpack_meta_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def normalize_inbound_payload(payload: Dict[str, Any], provider_slug: Optional[str] = None):
+        """Normalizes any registered provider webhook payload into a NormalizedInboundEnvelope (ADR-0047)."""
+        from app.adapters.whatsapp import get_whatsapp_bsp_adapter
+        adapter = get_whatsapp_bsp_adapter(provider_slug=provider_slug)
+        return adapter.normalize_inbound_webhook(payload)
+
+    @staticmethod
+    def unpack_inbound_payload(payload: Dict[str, Any], provider_slug: Optional[str] = None) -> Dict[str, Any]:
         """
-        Unpacks nested Meta Cloud API JSON structures:
-        entry[0].changes[0].value.messages[0], button callbacks, interactive list replies, audio.
+        Unpacks nested provider webhook structures (Meta Cloud API, Termii, Twilio, 360dialog, Local Sandbox)
+        into a unified provider-agnostic dictionary representation.
         """
-        result: Dict[str, Any] = {
-            "has_message": False,
-            "sender_phone": "",
-            "customer_name": "Valued Customer",
-            "message_id": "",
-            "message_type": "unknown",
-            "text": "",
-            "is_audio": False,
-            "media_id": None,
-            "is_interactive": False,
-            "interactive_id": None,
-        }
+        envelope = IngressService.normalize_inbound_payload(payload, provider_slug=provider_slug)
+        return envelope.to_legacy_dict()
 
-        if not payload.get("entry") or not isinstance(payload["entry"], list):
-            return result
+    @staticmethod
+    def unpack_meta_payload(payload: Dict[str, Any], provider_slug: Optional[str] = None) -> Dict[str, Any]:
+        """Backwards-compatible alias delegating to provider-agnostic unpack_inbound_payload."""
+        return IngressService.unpack_inbound_payload(payload, provider_slug=provider_slug)
 
-        entry = payload["entry"][0]
-        changes = entry.get("changes", [])
-        if not changes or not isinstance(changes, list):
-            return result
 
-        value = changes[0].get("value", {})
-        contacts = value.get("contacts", [])
-        if contacts and isinstance(contacts, list) and len(contacts) > 0:
-            profile = contacts[0].get("profile", {})
-            result["customer_name"] = profile.get("name", "Valued Customer")
-
-        messages = value.get("messages", [])
-        if not messages or not isinstance(messages, list):
-            return result
-
-        msg = messages[0]
-        result["has_message"] = True
-        result["sender_phone"] = str(msg.get("from", ""))
-        result["message_id"] = str(msg.get("id", ""))
-        msg_type = msg.get("type", "text")
-        result["message_type"] = msg_type
-
-        if msg_type == "text":
-            result["text"] = msg.get("text", {}).get("body", "").strip()
-
-        elif msg_type == "interactive":
-            result["is_interactive"] = True
-            interactive = msg.get("interactive", {})
-            itype = interactive.get("type")
-            if itype == "button_reply":
-                reply = interactive.get("button_reply", {})
-                result["text"] = reply.get("title", "")
-                result["interactive_id"] = reply.get("id")
-            elif itype == "list_reply":
-                reply = interactive.get("list_reply", {})
-                result["text"] = reply.get("title", "")
-                result["interactive_id"] = reply.get("id")
-
-        elif msg_type == "button":
-            result["is_interactive"] = True
-            btn = msg.get("button", {})
-            result["text"] = btn.get("text", "")
-            result["interactive_id"] = btn.get("payload")
-
-        elif msg_type in ["audio", "voice"]:
-            result["is_audio"] = True
-            audio = msg.get("audio", {}) or msg.get("voice", {})
-            media_id = audio.get("id")
-            result["media_id"] = media_id
-            result["text"] = f"[VOICE_NOTE_MEDIA_ID: {media_id}]"
-
-        return result
 
     @staticmethod
     async def get_or_create_conversation(

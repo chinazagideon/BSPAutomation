@@ -58,7 +58,7 @@ class ResponseFormatter:
 
         sections = [{"title": "Available Products", "rows": rows}]
         count_str = f"{len(offerings)} option{'s' if len(offerings) != 1 else ''}"
-        header = f"🌾 {query_title} ({count_str})"[:60]
+        header = f"{query_title} ({count_str})"[:60]
         body = "Select an item below to view live pricing and place your order:"
 
         return EgressPayloadEnvelope(

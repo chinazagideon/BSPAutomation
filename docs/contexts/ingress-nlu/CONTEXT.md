@@ -139,3 +139,25 @@ _Avoid_: Send payload, wire body, outbound message
 The protocol distinguishing catalog exploratory actions (`PRODUCT:{sku}`) from transactional slot binding (`SET_SLOT:{param}:{val}`) within WhatsApp interactive component identifiers.
 _Avoid_: Button IDs, payload convention, action keys
 
+**Normalized Inbound Message Envelope**:
+A provider-agnostic domain representation of an incoming customer turn (sender identity, message type, text body, interactive callback payload, media reference, or delivery status) translated from external provider webhooks before entering the conversational pipeline.
+_Avoid_: Meta payload, raw webhook dict, provider event
+
+**BSP Channel Adapter**:
+A pluggable anti-corruption boundary encapsulating both inbound webhook verification/normalization and outbound message/account-management dispatch for a specific WhatsApp provider (Meta Cloud API, Termii, Twilio, 360dialog, or Local Sandbox).
+_Avoid_: Provider wrapper, API client, webhook handler
+
+**Local BSP Sandbox**:
+A stateful local simulation harness that emulates a WhatsApp Business Solution Provider—signing and dispatching real inbound webhooks into the Ingress pipeline, capturing outbound Egress Payload Envelopes in real time for the Web UI Phone Simulator, and enforcing protocol rules and fault injection.
+_Avoid_: Mock array, fake server, UI stub
+
+**Customer Service Window Governor**:
+The 24-hour sliding session boundary initiated by a customer's last inbound message within which free-form and interactive session messages are permitted, and outside of which only pre-approved WhatsApp Business Templates may be dispatched.
+_Avoid_: Session timer, 24h timeout, template lock
+
+**Sandbox Fault Injection Profile**:
+A shared runtime configuration matrix controlling simulated transport and protocol anomalies (HTTP 429 rate-limiting, 5xx upstream outages, duplicate webhook replays, invalid HMAC signatures, and clock-shifted 24-hour window expirations).
+_Avoid_: Chaos config, mock error flag, test toggle
+
+
+

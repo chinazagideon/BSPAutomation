@@ -77,11 +77,13 @@ class Settings(BaseSettings):
     MONIEPOINT_BASE_URL: str = "https://api.moniepoint.com/v1"
 
     USE_MOCK_WHATSAPP_BSP: bool = True
-    WHATSAPP_BSP_PROVIDER: Literal["META_CLOUD", "TERMII", "TWILIO_AFRICA", "INFOBIP_NG"] = "META_CLOUD"
+    WHATSAPP_BSP_PROVIDER: Literal["META_CLOUD", "TERMII", "TWILIO_AFRICA", "INFOBIP_NG", "DIALOG360", "LOCAL_SANDBOX"] = "META_CLOUD"
     META_CLOUD_API_TOKEN: str = ""
     META_PHONE_NUMBER_ID: str = ""
     META_WEBHOOK_VERIFY_TOKEN: str = "enterprise_whatsapp_secret_webhook_token"
     META_APP_SECRET: str = "dev_meta_app_secret_placeholder"
+    SANDBOX_LOOPBACK_BASE_URL: str = ""
+
 
     # Termii SMS Rail (Manager Outage Alerts & Fallback)
     TERMII_API_KEY: str = ""

@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - ./docs/schema/001_enterprise_schema.sql:/docker-entrypoint-initdb.d/001_enterprise_schema.sql:ro
       - ./docs/schema/002_centralized_knowledge_and_generation.sql:/docker-entrypoint-initdb.d/002_centralized_knowledge_and_generation.sql:ro
@@ -25,7 +25,7 @@ services:
     container_name: bsp_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -33,6 +33,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight_dev
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
 
   api:
     build:
@@ -48,7 +55,7 @@ services:
     env_file:
       - ./backend/.env
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - ./backend:/app
     depends_on:

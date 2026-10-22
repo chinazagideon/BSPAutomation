@@ -40,6 +40,51 @@ class CarouselMessage(BaseModel):
         return self
 
 
+class NormalizedInboundEnvelope(BaseModel):
+    """Provider-agnostic normalized representation of an incoming WhatsApp webhook event (ADR-0047)."""
+    provider: str = "META_CLOUD"
+    phone_number_id: Optional[str] = None
+    has_message: bool = False
+    is_status_update: bool = False
+    status_value: Optional[str] = None
+    status_message_id: Optional[str] = None
+    sender_phone: str = ""
+    customer_name: str = "Valued Customer"
+    message_id: str = ""
+    message_type: str = "unknown"
+    text: str = ""
+    is_audio: bool = False
+    media_id: Optional[str] = None
+    is_interactive: bool = False
+    interactive_id: Optional[str] = None
+    reaction_emoji: Optional[str] = None
+    location_coords: Optional[Dict[str, Any]] = None
+    raw_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    def to_legacy_dict(self) -> Dict[str, Any]:
+        """Provides backwards-compatible dict representation for unpack_meta_payload callers."""
+        return {
+            "provider": self.provider,
+            "phone_number_id": self.phone_number_id,
+            "has_message": self.has_message,
+            "is_status_update": self.is_status_update,
+            "status_value": self.status_value,
+            "status_message_id": self.status_message_id,
+            "sender_phone": self.sender_phone,
+            "customer_name": self.customer_name,
+            "message_id": self.message_id,
+            "message_type": self.message_type,
+            "text": self.text,
+            "is_audio": self.is_audio,
+            "media_id": self.media_id,
+            "is_interactive": self.is_interactive,
+            "interactive_id": self.interactive_id,
+            "reaction_emoji": self.reaction_emoji,
+            "location_coords": self.location_coords,
+        }
+
+
+
 class PaymentGatewayPort(ABC):
     """Port interface for Nigerian Fintech Payment Rails (Moniepoint MFB, Paystack)."""
 
@@ -64,7 +109,26 @@ class PaymentGatewayPort(ABC):
 
 
 class WhatsAppBSPPort(ABC):
-    """Port interface for WhatsApp Business Solution Providers (Meta Cloud API, Termii)."""
+    """Port interface for WhatsApp Business Solution Providers (Meta Cloud API, Termii, Twilio, 360dialog, Local Sandbox)."""
+
+    provider_name: str = "META_CLOUD"
+
+    def verify_webhook_signature(
+        self,
+        raw_body: bytes,
+        headers: Dict[str, str],
+        secret: Optional[str] = None,
+    ) -> bool:
+        """Verifies cryptographic authenticity of incoming provider webhooks."""
+        return True
+
+    def extract_phone_number_id(self, payload: Dict[str, Any]) -> Optional[str]:
+        """Extracts external WhatsApp phone_number_id or business routing key from raw provider payload."""
+        return payload.get("phone_number_id")
+
+    def normalize_inbound_webhook(self, payload: Dict[str, Any]) -> NormalizedInboundEnvelope:
+        """Normalizes provider-specific webhook payload into canonical NormalizedInboundEnvelope."""
+        return NormalizedInboundEnvelope(provider=self.provider_name)
 
     @abstractmethod
     async def send_text_message(
