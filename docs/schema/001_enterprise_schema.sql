@@ -102,6 +102,29 @@ CREATE TRIGGER trg_merchants_updated_at
   BEFORE UPDATE ON core.merchants
   FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
 
+CREATE TABLE IF NOT EXISTS core.merchant_channels (
+  id UUID PRIMARY KEY DEFAULT core.generate_uuid_v7(),
+  merchant_id UUID NOT NULL REFERENCES core.merchants(id) ON DELETE CASCADE,
+  phone_number_id VARCHAR(64) NOT NULL,
+  business_phone VARCHAR(32) NOT NULL,
+  provider VARCHAR(32) NOT NULL DEFAULT 'META_CLOUD'
+    CHECK (provider IN ('META_CLOUD', 'TERMII', 'TWILIO_AFRICA', 'INFOBIP_NG', 'SANDBOX')),
+  channel_label VARCHAR(64) NOT NULL DEFAULT 'Main Office',
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT uq_channel_phone_number_id UNIQUE (phone_number_id),
+  CONSTRAINT uq_merchant_channel_label UNIQUE (merchant_id, channel_label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_channels_merchant_id ON core.merchant_channels (merchant_id);
+CREATE INDEX IF NOT EXISTS idx_merchant_channels_lookup ON core.merchant_channels (phone_number_id, is_active);
+
+CREATE TRIGGER trg_merchant_channels_updated_at
+  BEFORE UPDATE ON core.merchant_channels
+  FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();
+
 CREATE TABLE IF NOT EXISTS core.users (
   id UUID PRIMARY KEY DEFAULT core.generate_uuid_v7(),
   merchant_id UUID NOT NULL REFERENCES core.merchants(id) ON DELETE CASCADE,
@@ -183,6 +206,7 @@ CREATE INDEX idx_slang_dict_trgm ON ingress.slang_dictionary USING gin (phrase_p
 CREATE TABLE IF NOT EXISTS ingress.conversations (
   id UUID PRIMARY KEY DEFAULT core.generate_uuid_v7(),
   merchant_id UUID NOT NULL REFERENCES core.merchants(id) ON DELETE CASCADE,
+  channel_id UUID REFERENCES core.merchant_channels(id) ON DELETE SET NULL,
   customer_phone VARCHAR(32) NOT NULL,
   customer_name VARCHAR(128),
   funnel_stage VARCHAR(32) NOT NULL DEFAULT 'discovery'
@@ -203,6 +227,7 @@ CREATE TABLE IF NOT EXISTS ingress.conversations (
 );
 
 CREATE INDEX idx_conversations_merchant_lead ON ingress.conversations (merchant_id, lead_tier, urgency_score DESC);
+CREATE INDEX IF NOT EXISTS idx_conversations_channel_id ON ingress.conversations (channel_id);
 CREATE TRIGGER trg_conversations_updated_at
   BEFORE UPDATE ON ingress.conversations
   FOR EACH ROW EXECUTE FUNCTION core.update_timestamp();

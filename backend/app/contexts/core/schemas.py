@@ -33,6 +33,18 @@ class MerchantRead(MerchantBase):
     updated_at: datetime
 
 
+class ResolvedChannelContext(CamelModel):
+    """Immutable resolved tenant channel identity."""
+    merchant_id: str
+    channel_id: Optional[str] = None
+    phone_number_id: str
+    business_phone: Optional[str] = None
+    provider: str = "META_CLOUD"
+    channel_label: str = "Main Office"
+    is_default: bool = False
+    is_active: bool = True
+
+
 # -----------------------------------------------------------------------------
 # 2. USER & TEAM PROVISIONING SCHEMAS
 # -----------------------------------------------------------------------------

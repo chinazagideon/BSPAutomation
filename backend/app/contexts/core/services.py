@@ -9,10 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, text
 
 from app.core.config import settings
-from app.contexts.core.models import Merchant, User, RefreshToken
+from app.core.database import async_session_factory
+from app.core.exceptions import TenantChannelSecurityError
+from app.contexts.core.models import Merchant, MerchantChannel, User, RefreshToken
 from app.contexts.core.schemas import (
     MerchantCreate,
     MerchantRegisterRequest,
+    ResolvedChannelContext,
     UserLogin,
     UserCreate,
     TokenResponse,
@@ -455,3 +458,363 @@ class AuthService:
     @staticmethod
     async def get_user_by_id(session: AsyncSession, user_id: UUID) -> Optional[User]:
         return await session.get(User, user_id)
+
+
+# -----------------------------------------------------------------------------
+# MULTI-CHANNEL MERCHANT IDENTIFICATION & RESOLUTION SERVICE (ADR-0048)
+# -----------------------------------------------------------------------------
+import time as _time
+from typing import Dict as _Dict
+
+_PHONE_CHANNEL_CACHE: _Dict[str, tuple[ResolvedChannelContext, float]] = {}
+_CACHE_TTL_SECONDS = 300.0
+
+
+class MerchantIdentificationService:
+    """Single-responsibility service for multi-channel merchant identification and outbound channel validation."""
+
+    @classmethod
+    async def resolve_inbound(
+        cls,
+        phone_number_id: str,
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[ResolvedChannelContext]:
+        """
+        Resolves `ResolvedChannelContext` from an incoming webhook `phone_number_id` or E.164 number.
+        Uses Two-Tier Caching:
+        1. Tier 1: Local In-Memory TTL Cache (<0.05ms)
+        2. Tier 2: `core.merchant_channels` (1:N) with legacy fallback to `core.merchants`.
+        """
+        if not phone_number_id:
+            return None
+
+        now = _time.time()
+        if phone_number_id in _PHONE_CHANNEL_CACHE:
+            cached_ctx, exp = _PHONE_CHANNEL_CACHE[phone_number_id]
+            if now < exp:
+                return cached_ctx if cached_ctx.is_active else None
+            del _PHONE_CHANNEL_CACHE[phone_number_id]
+
+        if db is not None:
+            resolved = await cls._query_inbound(db, phone_number_id)
+        else:
+            async with async_session_factory() as session:
+                resolved = await cls._query_inbound(session, phone_number_id)
+
+        if resolved and resolved.is_active:
+            _PHONE_CHANNEL_CACHE[phone_number_id] = (resolved, now + _CACHE_TTL_SECONDS)
+            if resolved.phone_number_id:
+                _PHONE_CHANNEL_CACHE[resolved.phone_number_id] = (resolved, now + _CACHE_TTL_SECONDS)
+            return resolved
+
+        return None
+
+    @classmethod
+    async def _query_inbound(
+        cls,
+        session: AsyncSession,
+        phone_number_id: str,
+    ) -> Optional[ResolvedChannelContext]:
+        # 1. Primary lookup in 1:N core.merchant_channels
+        try:
+            ch_query = (
+                select(MerchantChannel)
+                .where(
+                    (MerchantChannel.phone_number_id == phone_number_id)
+                    | (MerchantChannel.business_phone == phone_number_id)
+                )
+                .order_by(
+                    MerchantChannel.is_active.desc(),
+                    (MerchantChannel.phone_number_id == phone_number_id).desc(),
+                    MerchantChannel.is_default.desc(),
+                    MerchantChannel.updated_at.desc(),
+                )
+                .limit(1)
+            )
+            ch_res = await session.execute(ch_query)
+            channel = ch_res.scalars().first()
+            if channel is not None:
+                if not channel.is_active:
+                    return None
+                return ResolvedChannelContext(
+                    merchant_id=str(channel.merchant_id),
+                    channel_id=str(channel.id),
+                    phone_number_id=channel.phone_number_id,
+                    business_phone=channel.business_phone,
+                    provider=channel.provider,
+                    channel_label=channel.channel_label,
+                    is_default=channel.is_default,
+                    is_active=channel.is_active,
+                )
+        except Exception:
+            pass
+
+        # 2. Backward-compatible fallback to legacy core.merchants columns
+        m_query = (
+            select(Merchant)
+            .where(
+                (Merchant.whatsapp_phone_number_id == phone_number_id)
+                | (Merchant.whatsapp_business_phone == phone_number_id)
+            )
+            .order_by(
+                Merchant.is_active.desc(),
+                (Merchant.whatsapp_phone_number_id == phone_number_id).desc(),
+                Merchant.updated_at.desc(),
+            )
+            .limit(1)
+        )
+        m_res = await session.execute(m_query)
+        merchant = m_res.scalars().first()
+        if merchant is not None:
+            return ResolvedChannelContext(
+                merchant_id=str(merchant.id),
+                channel_id=None,
+                phone_number_id=merchant.whatsapp_phone_number_id or phone_number_id,
+                business_phone=merchant.whatsapp_business_phone,
+                provider=merchant.bsp_provider or "META_CLOUD",
+                channel_label="Main Office",
+                is_default=True,
+                is_active=True,
+            )
+
+        return None
+
+    @classmethod
+    async def resolve_outbound(
+        cls,
+        merchant_id: str,
+        requested_phone_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> ResolvedChannelContext:
+        """
+        Validates outbound channel ownership for a tenant, backtracks a conversation's active `channel_id`,
+        or dynamically resolves the tenant's default channel.
+        Enforces a strict Fail-Closed policy: raises `TenantChannelSecurityError` if an unauthorized
+        or inactive `requested_phone_id` is supplied.
+        """
+        try:
+            m_uuid = UUID(str(merchant_id))
+        except Exception:
+            raise TenantChannelSecurityError(
+                merchant_id=str(merchant_id),
+                phone_number_id=str(requested_phone_id or "None"),
+                reason="Invalid merchant UUID format",
+            )
+
+        if db is not None:
+            return await cls._query_outbound(db, m_uuid, requested_phone_id, channel_id=channel_id)
+
+        async with async_session_factory() as session:
+            return await cls._query_outbound(session, m_uuid, requested_phone_id, channel_id=channel_id)
+
+    @classmethod
+    async def _query_outbound(
+        cls,
+        session: AsyncSession,
+        merchant_uuid: UUID,
+        requested_phone_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+    ) -> ResolvedChannelContext:
+        merchant_id_str = str(merchant_uuid)
+
+        # Case 1: Explicit requested_phone_id supplied -> Verify ownership & active status
+        if requested_phone_id:
+            ch_query = (
+                select(MerchantChannel)
+                .where(
+                    MerchantChannel.merchant_id == merchant_uuid,
+                    (MerchantChannel.phone_number_id == requested_phone_id)
+                    | (MerchantChannel.business_phone == requested_phone_id),
+                )
+                .order_by(
+                    MerchantChannel.is_active.desc(),
+                    MerchantChannel.is_default.desc(),
+                )
+                .limit(1)
+            )
+            ch_res = await session.execute(ch_query)
+            owned_channel = ch_res.scalars().first()
+
+            if owned_channel is not None:
+                if not owned_channel.is_active:
+                    raise TenantChannelSecurityError(
+                        merchant_id=merchant_id_str,
+                        phone_number_id=requested_phone_id,
+                        reason="Channel is deactivated",
+                    )
+                return ResolvedChannelContext(
+                    merchant_id=merchant_id_str,
+                    channel_id=str(owned_channel.id),
+                    phone_number_id=owned_channel.phone_number_id,
+                    business_phone=owned_channel.business_phone,
+                    provider=owned_channel.provider,
+                    channel_label=owned_channel.channel_label,
+                    is_default=owned_channel.is_default,
+                    is_active=owned_channel.is_active,
+                )
+
+            # Check if requested_phone_id belongs to a different merchant in core.merchant_channels
+            foreign_ch_query = (
+                select(MerchantChannel)
+                .where(
+                    MerchantChannel.merchant_id != merchant_uuid,
+                    (MerchantChannel.phone_number_id == requested_phone_id)
+                    | (MerchantChannel.business_phone == requested_phone_id),
+                )
+                .limit(1)
+            )
+            foreign_ch = (await session.execute(foreign_ch_query)).scalars().first()
+            if foreign_ch is not None:
+                raise TenantChannelSecurityError(
+                    merchant_id=merchant_id_str,
+                    phone_number_id=requested_phone_id,
+                    reason="Unauthorized cross-tenant channel access denied",
+                )
+
+            # Check legacy core.merchants record for this merchant
+            merchant = await session.get(Merchant, merchant_uuid)
+            if (
+                merchant is not None
+                and merchant.is_active
+                and requested_phone_id in (merchant.whatsapp_phone_number_id, merchant.whatsapp_business_phone)
+            ):
+                return ResolvedChannelContext(
+                    merchant_id=merchant_id_str,
+                    channel_id=None,
+                    phone_number_id=merchant.whatsapp_phone_number_id or requested_phone_id,
+                    business_phone=merchant.whatsapp_business_phone,
+                    provider=merchant.bsp_provider or "META_CLOUD",
+                    channel_label="Main Office",
+                    is_default=True,
+                    is_active=True,
+                )
+
+            raise TenantChannelSecurityError(
+                merchant_id=merchant_id_str,
+                phone_number_id=requested_phone_id,
+                reason="Unauthorized or unregistered channel for tenant",
+            )
+
+        # Case 1B: Conversation channel_id FK backtracking (when no explicit requested_phone_id was given)
+        if channel_id:
+            try:
+                ch_uuid = UUID(str(channel_id))
+                conv_ch_query = select(MerchantChannel).where(
+                    MerchantChannel.id == ch_uuid,
+                    MerchantChannel.merchant_id == merchant_uuid,
+                    MerchantChannel.is_active == True,
+                )
+                conv_ch = (await session.execute(conv_ch_query)).scalars().first()
+                if conv_ch is not None:
+                    return ResolvedChannelContext(
+                        merchant_id=merchant_id_str,
+                        channel_id=str(conv_ch.id),
+                        phone_number_id=conv_ch.phone_number_id,
+                        business_phone=conv_ch.business_phone,
+                        provider=conv_ch.provider,
+                        channel_label=conv_ch.channel_label,
+                        is_default=conv_ch.is_default,
+                        is_active=conv_ch.is_active,
+                    )
+            except Exception:
+                pass
+
+        # Case 2: No requested_phone_id supplied (Proactive / Cron / Default resolution)
+        all_ch_query = (
+            select(MerchantChannel)
+            .where(MerchantChannel.merchant_id == merchant_uuid)
+            .order_by(
+                MerchantChannel.is_active.desc(),
+                MerchantChannel.is_default.desc(),
+                MerchantChannel.created_at.asc(),
+            )
+        )
+        all_channels = list((await session.execute(all_ch_query)).scalars().all())
+        if all_channels:
+            active_channels = [c for c in all_channels if c.is_active]
+            if not active_channels:
+                raise TenantChannelSecurityError(
+                    merchant_id=merchant_id_str,
+                    phone_number_id="None",
+                    reason="All configured channels for tenant are deactivated",
+                )
+            chosen = active_channels[0]
+            return ResolvedChannelContext(
+                merchant_id=merchant_id_str,
+                channel_id=str(chosen.id),
+                phone_number_id=chosen.phone_number_id,
+                business_phone=chosen.business_phone,
+                provider=chosen.provider,
+                channel_label=chosen.channel_label,
+                is_default=chosen.is_default,
+                is_active=chosen.is_active,
+            )
+
+        # Legacy fallback to core.merchants when no rows exist in core.merchant_channels
+        merchant = await session.get(Merchant, merchant_uuid)
+        if merchant is not None and merchant.is_active and (
+            merchant.whatsapp_phone_number_id or merchant.whatsapp_business_phone
+        ):
+            return ResolvedChannelContext(
+                merchant_id=merchant_id_str,
+                channel_id=None,
+                phone_number_id=merchant.whatsapp_phone_number_id or merchant.whatsapp_business_phone,
+                business_phone=merchant.whatsapp_business_phone,
+                provider=merchant.bsp_provider or "META_CLOUD",
+                channel_label="Main Office",
+                is_default=True,
+                is_active=True,
+            )
+
+        raise TenantChannelSecurityError(
+            merchant_id=merchant_id_str,
+            phone_number_id="None",
+            reason="No active outbound channel configured for tenant",
+        )
+
+    @classmethod
+    async def list_merchant_channels(
+        cls,
+        merchant_id: str,
+        db: Optional[AsyncSession] = None,
+    ) -> List[ResolvedChannelContext]:
+        """Returns all configured channels for a merchant."""
+        try:
+            m_uuid = UUID(str(merchant_id))
+        except Exception:
+            return []
+
+        async def _fetch(session: AsyncSession) -> List[ResolvedChannelContext]:
+            stmt = (
+                select(MerchantChannel)
+                .where(MerchantChannel.merchant_id == m_uuid)
+                .order_by(MerchantChannel.is_default.desc(), MerchantChannel.created_at.asc())
+            )
+            rows = list((await session.execute(stmt)).scalars().all())
+            return [
+                ResolvedChannelContext(
+                    merchant_id=str(r.merchant_id),
+                    channel_id=str(r.id),
+                    phone_number_id=r.phone_number_id,
+                    business_phone=r.business_phone,
+                    provider=r.provider,
+                    channel_label=r.channel_label,
+                    is_default=r.is_default,
+                    is_active=r.is_active,
+                )
+                for r in rows
+            ]
+
+        if db is not None:
+            return await _fetch(db)
+        async with async_session_factory() as session:
+            return await _fetch(session)
+
+    @classmethod
+    def invalidate_cache(cls, phone_number_id: Optional[str] = None) -> None:
+        """Evicts a specific phone_number_id or clears the entire in-memory channel cache."""
+        if phone_number_id is None:
+            _PHONE_CHANNEL_CACHE.clear()
+        else:
+            _PHONE_CHANNEL_CACHE.pop(phone_number_id, None)

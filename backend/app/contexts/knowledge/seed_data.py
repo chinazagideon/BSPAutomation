@@ -21,6 +21,24 @@ DEMO_MERCHANTS: List[Dict[str, Any]] = [
         "slug": "alaba-agro",
         "whatsapp_business_phone": "+2348011223301",
         "whatsapp_phone_number_id": "meta_phone_alaba_agro",
+        "channels": [
+            {
+                "phone_number_id": "meta_phone_alaba_agro",
+                "business_phone": "+2348011223301",
+                "provider": "META_CLOUD",
+                "channel_label": "Main Retail Desk",
+                "is_default": True,
+                "is_active": True,
+            },
+            {
+                "phone_number_id": "meta_phone_alaba_agro_delivery",
+                "business_phone": "+2348011223399",
+                "provider": "META_CLOUD",
+                "channel_label": "Wholesale & Logistics Desk",
+                "is_default": False,
+                "is_active": True,
+            },
+        ],
     },
     {
         "id": LEKKI_GLOW_MERCHANT_ID,
@@ -28,6 +46,16 @@ DEMO_MERCHANTS: List[Dict[str, Any]] = [
         "slug": "lekki-glow",
         "whatsapp_business_phone": "+2348011223302",
         "whatsapp_phone_number_id": "meta_phone_lekki_glow",
+        "channels": [
+            {
+                "phone_number_id": "meta_phone_lekki_glow",
+                "business_phone": "+2348011223302",
+                "provider": "META_CLOUD",
+                "channel_label": "Main Wellness Reception",
+                "is_default": True,
+                "is_active": True,
+            },
+        ],
     },
     {
         "id": HORIZON_TECH_MERCHANT_ID,
@@ -35,6 +63,16 @@ DEMO_MERCHANTS: List[Dict[str, Any]] = [
         "slug": "horizon-tech",
         "whatsapp_business_phone": "+2348011223303",
         "whatsapp_phone_number_id": "meta_phone_horizon_tech",
+        "channels": [
+            {
+                "phone_number_id": "meta_phone_horizon_tech",
+                "business_phone": "+2348011223303",
+                "provider": "META_CLOUD",
+                "channel_label": "Main Sales Line",
+                "is_default": True,
+                "is_active": True,
+            },
+        ],
     },
 ]
 

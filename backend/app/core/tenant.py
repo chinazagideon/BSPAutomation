@@ -133,62 +133,24 @@ async def get_tenant_db(
 
 
 # -----------------------------------------------------------------------------
-# 5. TWO-TIER CACHED WEBHOOK TENANT RESOLVER (ADR-0031)
+# 5. TWO-TIER CACHED WEBHOOK TENANT RESOLVER (ADR-0031, ADR-0048)
 # -----------------------------------------------------------------------------
-# Process-local In-Memory TTL Cache: phone_number_id -> (merchant_id, expire_at)
-_PHONE_TENANT_CACHE: Dict[str, tuple[str, float]] = {}
-_CACHE_TTL_SECONDS = 300.0  # 5 minutes
-
-
 async def resolve_merchant_from_phone(
     phone_number_id: str,
     db: Optional[AsyncSession] = None,
 ) -> Optional[str]:
     """
-    Resolves merchant_id from external WhatsApp phone_number_id using Two-Tier Caching:
-    1. Tier 1: Local In-Memory TTL Cache (<0.05ms)
-    2. Tier 2: PostgreSQL DB Fallback & Cache Hydration
+    Delegates to `MerchantIdentificationService.resolve_inbound` (ADR-0048)
+    while preserving backwards-compatible `Optional[str]` return contract.
     """
-    now = time.time()
-    # 1. Tier 1: Check in-memory cache
-    if phone_number_id in _PHONE_TENANT_CACHE:
-        merchant_id, exp = _PHONE_TENANT_CACHE[phone_number_id]
-        if now < exp:
-            return merchant_id
-        del _PHONE_TENANT_CACHE[phone_number_id]
+    from app.contexts.core.services import MerchantIdentificationService
 
-    from app.contexts.core.models import Merchant
-
-    query = (
-        select(Merchant.id)
-        .where(
-            (Merchant.whatsapp_phone_number_id == phone_number_id) |
-            (Merchant.whatsapp_business_phone == phone_number_id)
-        )
-        .order_by(
-            Merchant.is_active.desc(),
-            (Merchant.whatsapp_phone_number_id == phone_number_id).desc(),
-            Merchant.updated_at.desc(),
-        )
-        .limit(1)
-    )
-
-    if db is not None:
-        result = await db.execute(query)
-        merchant_id_uuid = result.scalars().first()
-    else:
-        async with async_session_factory() as session:
-            result = await session.execute(query)
-            merchant_id_uuid = result.scalars().first()
-
-    if merchant_id_uuid:
-        m_id = str(merchant_id_uuid)
-        _PHONE_TENANT_CACHE[phone_number_id] = (m_id, now + _CACHE_TTL_SECONDS)
-        return m_id
-
-    return None
+    ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id=phone_number_id, db=db)
+    return ctx.merchant_id if ctx else None
 
 
-def invalidate_phone_tenant_cache(phone_number_id: str) -> None:
-    """Evicts a phone number from the in-memory tenant cache upon configuration update."""
-    _PHONE_TENANT_CACHE.pop(phone_number_id, None)
+def invalidate_phone_tenant_cache(phone_number_id: Optional[str] = None) -> None:
+    """Evicts a phone number from the in-memory channel cache upon configuration update."""
+    from app.contexts.core.services import MerchantIdentificationService
+
+    MerchantIdentificationService.invalidate_cache(phone_number_id)

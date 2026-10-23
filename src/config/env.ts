@@ -14,7 +14,7 @@ export const APP_CONFIG = {
   DEFAULT_CUSTOMER_NAME: import.meta.env.VITE_SANDBOX_CUSTOMER_NAME || 'Tunde Adeleke',
   DEFAULT_PHONE_NUMBER_ID:
     import.meta.env.VITE_SANDBOX_PHONE_NUMBER_ID || 'meta_phone_alaba_agro',
-  DEFAULT_PROVIDER: import.meta.env.VITE_SANDBOX_PROVIDER || 'whatsapp',
+  DEFAULT_PROVIDER: import.meta.env.VITE_SANDBOX_PROVIDER || 'sandbox',
   DEFAULT_VIRTUAL_BANK: import.meta.env.VITE_DEFAULT_VIRTUAL_BANK || 'Moniepoint MFB',
   DEFAULT_VIRTUAL_ACCOUNT: import.meta.env.VITE_DEFAULT_VIRTUAL_ACCOUNT || '9031842901',
 } as const;

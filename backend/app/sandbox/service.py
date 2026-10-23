@@ -160,24 +160,26 @@ class SandboxOrchestrationService:
 
     @staticmethod
     async def ensure_sandbox_tenant(phone_number_id: str) -> str:
+        from app.contexts.core.services import MerchantIdentificationService
         from app.contexts.knowledge.seeder import CatalogSeeder
         from app.core.database import async_session_factory
-        from app.core.tenant import resolve_merchant_from_phone
 
-        merchant_id = await resolve_merchant_from_phone(phone_number_id)
+        channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
+        merchant_id = channel_ctx.merchant_id if channel_ctx else None
         if not merchant_id:
             try:
                 async with async_session_factory() as seed_session:
                     await CatalogSeeder.seed_all(session=seed_session, reset=False)
-                merchant_id = await resolve_merchant_from_phone(phone_number_id)
+                channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
+                merchant_id = channel_ctx.merchant_id if channel_ctx else None
             except Exception:
                 merchant_id = str(ALABA_AGRO_MERCHANT_ID)
         return merchant_id or str(ALABA_AGRO_MERCHANT_ID)
 
     @classmethod
     async def get_state_snapshot(cls, phone_number_id: str, customer_phone: str) -> Dict[str, Any]:
+        from app.contexts.core.services import MerchantIdentificationService
         from app.core.generation.negotiation import NegotiationFrameManager
-        from app.core.tenant import resolve_merchant_from_phone
 
         store = get_sandbox_store()
         faults = await store.get_fault_profile()
@@ -187,7 +189,8 @@ class SandboxOrchestrationService:
         webhook_logs = await store.get_webhook_logs()
         nlu_traces = await store.get_nlu_traces()
 
-        merchant_id = await resolve_merchant_from_phone(phone_number_id) or str(ALABA_AGRO_MERCHANT_ID)
+        channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
+        merchant_id = channel_ctx.merchant_id if channel_ctx else str(ALABA_AGRO_MERCHANT_ID)
         active_frame = await NegotiationFrameManager.get_frame(merchant_id, customer_phone.lstrip("+"))
 
         return {
@@ -198,10 +201,12 @@ class SandboxOrchestrationService:
                     "slug": m["slug"],
                     "whatsapp_business_phone": m["whatsapp_business_phone"],
                     "whatsapp_phone_number_id": m["whatsapp_phone_number_id"],
+                    "channels": m.get("channels", []),
                 }
                 for m in DEMO_MERCHANTS
             ],
             "active_merchant_id": merchant_id,
+            "active_channel": channel_ctx.model_dump() if channel_ctx else None,
             "phone_number_id": phone_number_id,
             "customer_phone": customer_phone,
             "fault_profile": faults.model_dump(),
@@ -475,10 +480,11 @@ class SandboxOrchestrationService:
 
     @classmethod
     async def reset_session(cls, phone_number_id: str, customer_phone: str) -> Dict[str, Any]:
-        from app.core.tenant import resolve_merchant_from_phone
+        from app.contexts.core.services import MerchantIdentificationService
 
         store = get_sandbox_store()
-        merchant_id = await resolve_merchant_from_phone(phone_number_id) or str(ALABA_AGRO_MERCHANT_ID)
+        channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
+        merchant_id = channel_ctx.merchant_id if channel_ctx else str(ALABA_AGRO_MERCHANT_ID)
         await store.clear_conversation(merchant_id=merchant_id, customer_phone=customer_phone.lstrip("+"))
         await store.update_fault_profile({
             "force_rate_limit_429": False,

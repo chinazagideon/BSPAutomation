@@ -37,6 +37,26 @@ class Merchant(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     users = relationship("User", back_populates="merchant", cascade="all, delete-orphan")
+    channels = relationship("MerchantChannel", back_populates="merchant", cascade="all, delete-orphan")
+
+
+class MerchantChannel(Base):
+    """1:N WhatsApp phone number channels belonging to a merchant."""
+    __tablename__ = "merchant_channels"
+    __table_args__ = {"schema": "core"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), nullable=False, index=True)
+    phone_number_id = Column(String(64), unique=True, nullable=False, index=True)
+    business_phone = Column(String(32), nullable=False)
+    provider = Column(String(32), nullable=False, default="META_CLOUD")
+    channel_label = Column(String(64), nullable=False, default="Main Office")
+    is_default = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    merchant = relationship("Merchant", back_populates="channels")
 
 
 class User(Base):

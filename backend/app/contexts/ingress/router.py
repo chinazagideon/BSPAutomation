@@ -41,7 +41,7 @@ async def receive_whatsapp_webhook(provider: str, request: Request):
     """
     import json
     from app.adapters.whatsapp import get_whatsapp_bsp_adapter
-    from app.core.tenant import resolve_merchant_from_phone
+    from app.contexts.core.services import MerchantIdentificationService
     from app.core.database import tenant_session_scope
 
     raw_body = await request.body()
@@ -57,7 +57,7 @@ async def receive_whatsapp_webhook(provider: str, request: Request):
     )
     is_valid_sig = adapter.verify_webhook_signature(raw_body, headers_dict, settings.META_APP_SECRET)
     if has_sig_header and not is_valid_sig:
-        raise HTTPException(status_code=403, detail="Invalid webhook HMAC signature")
+        raise HTTPException(status_code=403, detail="Invalid X-Hub-Signature-256 or webhook HMAC signature")
     elif not has_sig_header and settings.ENVIRONMENT in ["production", "staging"]:
         raise HTTPException(status_code=403, detail="Missing webhook signature header")
 
@@ -67,9 +67,10 @@ async def receive_whatsapp_webhook(provider: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # 3. Two-Tier Cached Webhook Tenant Resolution (ADR-0031)
+    # 3. Two-Tier Cached Multi-Channel Tenant Resolution (ADR-0031, ADR-0048)
     phone_number_id = IngressService.extract_phone_number_id(payload, provider_slug=provider)
-    merchant_id_str = await resolve_merchant_from_phone(phone_number_id) if phone_number_id else None
+    channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id) if phone_number_id else None
+    merchant_id_str = channel_ctx.merchant_id if channel_ctx else None
 
     # Refresh 24h Customer Service Window in Local Sandbox when customer message arrives
     normalized = IngressService.normalize_inbound_payload(payload, provider_slug=provider)

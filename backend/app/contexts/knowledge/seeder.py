@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 import structlog
 
-from app.contexts.core.models import Merchant
+from app.contexts.core.services import MerchantIdentificationService
+from app.contexts.core.models import Merchant, MerchantChannel
 from app.contexts.knowledge.models import KnowledgeEntry
 from app.contexts.knowledge.services import KnowledgeService
 from app.contexts.knowledge.seed_data import (
@@ -31,7 +32,7 @@ class CatalogSeeder:
 
     @classmethod
     async def ensure_merchants(cls, session: AsyncSession) -> Dict[str, Merchant]:
-        """Ensures the standard multi-tenant demo merchants exist in core.merchants."""
+        """Ensures the standard multi-tenant demo merchants and 1:N channels exist in core schema."""
         result: Dict[str, Merchant] = {}
         for m_data in DEMO_MERCHANTS:
             stmt = select(Merchant).where(Merchant.id == m_data["id"])
@@ -55,8 +56,35 @@ class CatalogSeeder:
                     existing = merchant
 
             result[m_data["slug"]] = existing
+            await session.flush()
+
+            # Seed 1:N channels in core.merchant_channels for this merchant
+            for ch_data in m_data.get("channels", []):
+                ch_stmt = select(MerchantChannel).where(
+                    MerchantChannel.phone_number_id == ch_data["phone_number_id"]
+                )
+                existing_ch = (await session.execute(ch_stmt)).scalar_one_or_none()
+                if existing_ch:
+                    existing_ch.merchant_id = existing.id
+                    existing_ch.business_phone = ch_data["business_phone"]
+                    existing_ch.provider = ch_data.get("provider", "META_CLOUD")
+                    existing_ch.channel_label = ch_data.get("channel_label", "Main Office")
+                    existing_ch.is_default = ch_data.get("is_default", False)
+                    existing_ch.is_active = ch_data.get("is_active", True)
+                else:
+                    new_ch = MerchantChannel(
+                        merchant_id=existing.id,
+                        phone_number_id=ch_data["phone_number_id"],
+                        business_phone=ch_data["business_phone"],
+                        provider=ch_data.get("provider", "META_CLOUD"),
+                        channel_label=ch_data.get("channel_label", "Main Office"),
+                        is_default=ch_data.get("is_default", False),
+                        is_active=ch_data.get("is_active", True),
+                    )
+                    session.add(new_ch)
 
         await session.flush()
+        MerchantIdentificationService.invalidate_cache()
         return result
 
     @classmethod

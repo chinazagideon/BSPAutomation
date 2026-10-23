@@ -566,16 +566,16 @@ export default function App() {
       prev.map((s) =>
         s.id === slotId
           ? {
-              ...s,
-              status: 'HELD_PENDING_PAYMENT',
-              heldByPhone: phone,
-              holdExpiresAt: new Date(
-                Date.now() + 10 * 60 * 1000
-              ).toISOString(),
-              transactionRef: `HOLD_${slotId}_${Math.floor(
-                Math.random() * 9000 + 1000
-              )}`,
-            }
+            ...s,
+            status: 'HELD_PENDING_PAYMENT',
+            heldByPhone: phone,
+            holdExpiresAt: new Date(
+              Date.now() + 10 * 60 * 1000
+            ).toISOString(),
+            transactionRef: `HOLD_${slotId}_${Math.floor(
+              Math.random() * 9000 + 1000
+            )}`,
+          }
           : s
       )
     );
@@ -606,13 +606,13 @@ export default function App() {
       prev.map((ag) =>
         ag.id === agentId
           ? {
-              ...ag,
-              status: ag.status === 'ONLINE' ? 'OFFLINE_NEPA' : 'ONLINE',
-              lastHeartbeat:
-                ag.status === 'ONLINE'
-                  ? '1m ago (Broadband Dropout)'
-                  : 'Just now',
-            }
+            ...ag,
+            status: ag.status === 'ONLINE' ? 'OFFLINE_NEPA' : 'ONLINE',
+            lastHeartbeat:
+              ag.status === 'ONLINE'
+                ? '1m ago (Broadband Dropout)'
+                : 'Just now',
+          }
           : ag
       )
     );

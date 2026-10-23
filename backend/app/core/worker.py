@@ -301,6 +301,18 @@ async def _execute_webhook_processing(
         media_id = inbound_envelope["media_id"]
         is_interactive = inbound_envelope.get("is_interactive", False)
         interactive_id = inbound_envelope.get("interactive_id")
+        origin_phone_id = inbound_envelope.get("phone_number_id") or IngressService.extract_phone_number_id(
+            payload, provider_slug=resolved_provider_slug
+        )
+
+        # Validate outbound channel ownership & dynamic default resolution (ADR-0048)
+        from app.contexts.core.services import MerchantIdentificationService
+        outbound_channel = await MerchantIdentificationService.resolve_outbound(
+            merchant_id=merchant_id,
+            requested_phone_id=origin_phone_id,
+            db=session,
+        )
+        validated_phone_id = outbound_channel.phone_number_id
 
 
         # Debounce rapid burst messages (ADR-0043 Point 8)
@@ -326,7 +338,11 @@ async def _execute_webhook_processing(
         if NegotiationFrameManager.is_cancellation_intent(sanitized_text):
             await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
             cancel_reply = "No wahala! We don clear your pending order. Let us know anytime you're ready to order again."
-            await whatsapp.send_text_message(to_phone=sender_phone, message=cancel_reply)
+            await whatsapp.send_text_message(
+                to_phone=sender_phone,
+                message=cancel_reply,
+                phone_number_id=validated_phone_id,
+            )
             if webhook_event:
                 webhook_event.processed_at = datetime.now(timezone.utc)
             return {"status": "CANCELLED_NEGOTIATION"}
@@ -346,6 +362,7 @@ async def _execute_webhook_processing(
             await whatsapp.send_text_message(
                 to_phone=sender_phone,
                 message="You have successfully unsubscribed. We no go send you promotional messages again. Type START anytime to opt back in.",
+                phone_number_id=validated_phone_id,
             )
             if webhook_event:
                 webhook_event.processed_at = datetime.now(timezone.utc)
@@ -357,6 +374,7 @@ async def _execute_webhook_processing(
             merchant_id=UUID(merchant_id),
             customer_phone=sender_phone,
             customer_name=customer_name,
+            channel_id=UUID(outbound_channel.channel_id) if outbound_channel.channel_id else None,
         )
         recent_history = await IngressService.get_recent_conversation_history(
             session=session,
@@ -378,7 +396,11 @@ async def _execute_webhook_processing(
             session.add(inbound_msg)
 
             ack_reply = "We receive your voice note! Our human support team go listen am shortly. If you dey hurry, you fit type your request here."
-            await whatsapp.send_text_message(to_phone=sender_phone, message=ack_reply)
+            await whatsapp.send_text_message(
+                to_phone=sender_phone,
+                message=ack_reply,
+                phone_number_id=validated_phone_id,
+            )
 
             outbound_msg = Message(
                 conversation_id=conversation.id,
@@ -591,15 +613,21 @@ async def _execute_webhook_processing(
                         body_text=tool_envelope.body_text,
                         button_title=tool_envelope.button_title or "View Options",
                         sections=tool_envelope.sections or [],
+                        phone_number_id=validated_phone_id,
                     )
                 elif tool_envelope.message_type == EgressMessageType.INTERACTIVE_BUTTONS:
                     await whatsapp.send_interactive_buttons(
                         to_phone=sender_phone,
                         body_text=tool_envelope.body_text,
                         buttons=tool_envelope.buttons or [],
+                        phone_number_id=validated_phone_id,
                     )
                 else:
-                    await whatsapp.send_text_message(to_phone=sender_phone, message=tool_envelope.body_text)
+                    await whatsapp.send_text_message(
+                        to_phone=sender_phone,
+                        message=tool_envelope.body_text,
+                        phone_number_id=validated_phone_id,
+                    )
 
                 outbound_msg = Message(
                     conversation_id=conversation.id,
@@ -619,9 +647,14 @@ async def _execute_webhook_processing(
                         to_phone=sender_phone,
                         body_text=tool_reply_text,
                         buttons=tool_buttons,
+                        phone_number_id=validated_phone_id,
                     )
                 else:
-                    await whatsapp.send_text_message(to_phone=sender_phone, message=tool_reply_text)
+                    await whatsapp.send_text_message(
+                        to_phone=sender_phone,
+                        message=tool_reply_text,
+                        phone_number_id=validated_phone_id,
+                    )
 
                 outbound_msg = Message(
                     conversation_id=conversation.id,
@@ -774,15 +807,21 @@ async def _execute_webhook_processing(
                     body_text=envelope.body_text,
                     button_title=envelope.button_title or "View Options",
                     sections=envelope.sections or [],
+                    phone_number_id=validated_phone_id,
                 )
             elif envelope.message_type == EgressMessageType.INTERACTIVE_BUTTONS:
                 await whatsapp.send_interactive_buttons(
                     to_phone=sender_phone,
                     body_text=envelope.body_text,
                     buttons=envelope.buttons or [],
+                    phone_number_id=validated_phone_id,
                 )
             else:
-                await whatsapp.send_text_message(to_phone=sender_phone, message=envelope.body_text)
+                await whatsapp.send_text_message(
+                    to_phone=sender_phone,
+                    message=envelope.body_text,
+                    phone_number_id=validated_phone_id,
+                )
 
             outbound_msg = Message(
                 conversation_id=conversation.id,

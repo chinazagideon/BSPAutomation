@@ -58,3 +58,13 @@ class WhatsAppDeliveryFailedException(WhatsAppBSPException):
 class ProviderSchemaMismatchException(DomainGatewayException):
     """Raised when an external API response fails strict DTO hydration validation."""
     pass
+
+
+# Multi-Channel Security & Anti-Spoofing Exceptions (ADR-0048)
+class TenantChannelSecurityError(Exception):
+    """Raised when an outbound egress attempt requests an unauthorized or inactive phone_number_id."""
+    def __init__(self, merchant_id: str, phone_number_id: str, reason: str = "Unauthorized"):
+        super().__init__(f"Security violation for tenant {merchant_id}: phone_number_id '{phone_number_id}' is {reason}")
+        self.merchant_id = merchant_id
+        self.phone_number_id = phone_number_id
+        self.reason = reason

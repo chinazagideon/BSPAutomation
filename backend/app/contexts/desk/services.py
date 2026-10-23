@@ -207,6 +207,19 @@ class DeskService:
         whatsapp = get_whatsapp_bsp_adapter()
 
         async with tenant_session_scope(event.merchant_id) as session:
+            from app.contexts.core.services import MerchantIdentificationService
+
+            outbound_phone_id: Optional[str] = None
+            try:
+                out_ch = await MerchantIdentificationService.resolve_outbound(
+                    merchant_id=event.merchant_id,
+                    requested_phone_id=None,
+                    db=session,
+                )
+                outbound_phone_id = out_ch.phone_number_id
+            except Exception:
+                pass
+
             # 1. Notify waiting customers ONCE on initial outage detection only
             if not event.is_reminder:
                 query = await session.execute(
@@ -232,8 +245,23 @@ class DeskService:
                             f"Your request is safely saved at position #{queue_pos} in our queue. "
                             f"Our team will attend to you immediately power and connectivity restore. Thank you for your patience! 🙏"
                         )
+                        conv_phone_id = outbound_phone_id
+                        if conv.channel_id:
+                            try:
+                                conv_ch = await MerchantIdentificationService.resolve_outbound(
+                                    merchant_id=event.merchant_id,
+                                    channel_id=str(conv.channel_id),
+                                    db=session,
+                                )
+                                conv_phone_id = conv_ch.phone_number_id
+                            except Exception:
+                                pass
                         try:
-                            await whatsapp.send_text_message(to_phone=conv.customer_phone, message=customer_msg)
+                            await whatsapp.send_text_message(
+                                to_phone=conv.customer_phone,
+                                message=customer_msg,
+                                phone_number_id=conv_phone_id,
+                            )
                         except Exception as err:
                             print(f"[Desk] Failed to send queue notice to customer: {err}")
 
@@ -255,7 +283,11 @@ class DeskService:
                         f"{event.open_ticket_count} customer tickets are held in queue. Automated position notifications have been dispatched."
                     )
                 try:
-                    await whatsapp.send_text_message(to_phone=merchant.whatsapp_business_phone, message=manager_alert)
+                    await whatsapp.send_text_message(
+                        to_phone=merchant.whatsapp_business_phone,
+                        message=manager_alert,
+                        phone_number_id=outbound_phone_id,
+                    )
                 except Exception as err:
                     print(f"[Desk] Failed to send emergency WhatsApp alert to manager: {err}")
 
@@ -267,7 +299,20 @@ class DeskService:
         """
         whatsapp = get_whatsapp_bsp_adapter()
         async with tenant_session_scope(event.merchant_id) as session:
+            from app.contexts.core.services import MerchantIdentificationService
             from app.contexts.core.models import Merchant
+
+            outbound_phone_id: Optional[str] = None
+            try:
+                out_ch = await MerchantIdentificationService.resolve_outbound(
+                    merchant_id=event.merchant_id,
+                    requested_phone_id=None,
+                    db=session,
+                )
+                outbound_phone_id = out_ch.phone_number_id
+            except Exception:
+                pass
+
             merchant_res = await session.execute(
                 select(Merchant).where(Merchant.id == UUID(event.merchant_id))
             )
@@ -279,7 +324,11 @@ class DeskService:
                     f"Power outage resolved after approximately {duration_mins} minute(s)."
                 )
                 try:
-                    await whatsapp.send_text_message(to_phone=merchant.whatsapp_business_phone, message=restore_msg)
+                    await whatsapp.send_text_message(
+                        to_phone=merchant.whatsapp_business_phone,
+                        message=restore_msg,
+                        phone_number_id=outbound_phone_id,
+                    )
                 except Exception as err:
                     print(f"[Desk] Failed to send restoration notice to manager: {err}")
 

@@ -58,6 +58,7 @@ class Conversation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), nullable=False)
+    channel_id = Column(UUID(as_uuid=True), ForeignKey("core.merchant_channels.id", ondelete="SET NULL"), nullable=True, index=True)
     customer_phone = Column(String(32), nullable=False)
     customer_name = Column(String(128), nullable=True)
     funnel_stage = Column(String(32), nullable=False, default="discovery")
@@ -72,6 +73,7 @@ class Conversation(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+    channel = relationship("MerchantChannel")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
 
     @property

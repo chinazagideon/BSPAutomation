@@ -67,6 +67,7 @@ class IngressService:
         merchant_id: UUID,
         customer_phone: str,
         customer_name: Optional[str] = None,
+        channel_id: Optional[UUID] = None,
     ) -> Conversation:
         from datetime import datetime, timezone, timedelta
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -83,6 +84,7 @@ class IngressService:
         if not conversation:
             conversation = Conversation(
                 merchant_id=merchant_id,
+                channel_id=channel_id,
                 customer_phone=customer_phone,
                 customer_name=customer_name or "Valued SME Customer",
                 funnel_stage="discovery",
@@ -98,6 +100,8 @@ class IngressService:
                 conversation.is_open = True
             if customer_name and conversation.customer_name != customer_name:
                 conversation.customer_name = customer_name
+            if channel_id is not None and conversation.channel_id != channel_id:
+                conversation.channel_id = channel_id
             conversation.updated_at = datetime.now(timezone.utc)
             await session.flush()
         return conversation

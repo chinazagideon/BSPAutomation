@@ -12,8 +12,8 @@ interface SimulatorControlBarProps {
 }
 
 const PROVIDERS = [
-  { slug: 'whatsapp', label: 'Default (Active BSP)' },
   { slug: 'sandbox', label: 'Local Sandbox' },
+  { slug: 'whatsapp', label: 'Meta Cloud' },
   { slug: 'meta', label: 'Meta Cloud v20.0' },
   { slug: 'termii', label: 'Termii NG' },
   { slug: 'twilio', label: 'Twilio Africa' },

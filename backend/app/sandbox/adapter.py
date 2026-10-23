@@ -6,11 +6,18 @@ from typing import Any, Dict, List, Optional
 from app.adapters.base import CarouselMessage
 from app.adapters.providers.base_recorder import BaseInMemoryWhatsAppAdapter
 from app.adapters.whatsapp_dtos import MetaSendMessageResponseDTO
+from app.contexts.knowledge.seed_data import DEMO_MERCHANTS
 from app.core.config import settings
 from app.core.egress import AuditedHttpClient
 from app.core.exceptions import WhatsAppDeliveryFailedException, WhatsAppRateLimitedException
 from app.core.trace import get_context_merchant_id
 from app.sandbox.state import SandboxMessageRecord, get_sandbox_store
+
+_SANDBOX_MERCHANT_PHONE_MAP: Dict[str, str] = {
+    str(m["id"]): str(m["whatsapp_phone_number_id"])
+    for m in DEMO_MERCHANTS
+    if "id" in m and "whatsapp_phone_number_id" in m
+}
 
 
 class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
@@ -41,7 +48,12 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
     ) -> Dict[str, Any]:
         store = get_sandbox_store()
         faults = await store.get_fault_profile()
-        target_phone_id = phone_number_id or settings.META_PHONE_NUMBER_ID or "meta_phone_alaba_agro"
+        context_m_id = str(get_context_merchant_id() or "")
+        target_phone_id = (
+            phone_number_id
+            or _SANDBOX_MERCHANT_PHONE_MAP.get(context_m_id)
+            or "meta_phone_alaba_agro"
+        )
         to_phone = str(record.get("to", ""))
 
         if settings.SANDBOX_LOOPBACK_BASE_URL and self.http_client:
