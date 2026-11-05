@@ -274,7 +274,7 @@ class MockLLMAdapter(LLMProviderPort):
         extracted_entities: Dict[str, Any] = {"topic": "B2B SME Commercial Inquiry"}
 
         if "baking" in lower or "bakery" in lower or "flour" in lower:
-            suggested_reply = "Welcome! We have industrial bakery ovens and Grade A baking flour ready for dispatch across Ikeja and Ibadan."
+            suggested_reply = "(: Welcome! We have industrial bakery ovens and Grade A baking flour ready for dispatch across Ikeja and Ibadan."
             intent = "VERTICAL_SPECIFIC_INQUIRY"
             lead_tier = "HOT"
             urgency_score = 8
