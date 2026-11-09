@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-3.7-flash"
 
+    # Open-Weight Stateless LLM Boundary (Function A: Parser & Function B: Translator)
+    OPEN_WEIGHT_PROVIDER: Literal["sandbox", "vllm", "ollama", "huggingface"] = "sandbox"
+    OPEN_WEIGHT_BASE_URL: str = "http://localhost:8001/v1"
+    OPEN_WEIGHT_API_KEY: str = "EMPTY"
+    OPEN_WEIGHT_MODEL_ID: str = "Qwen/Qwen2.5-3B-Instruct"
+    OPEN_WEIGHT_TIMEOUT_SECONDS: float = 1.5
+    OPEN_WEIGHT_MAX_PARSE_TOKENS: int = 96
+    OPEN_WEIGHT_MAX_TRANSLATE_TOKENS: int = 160
+
+    # Deterministic FSM & LIFO Context Stack
+    FSM_STACK_MAX_DEPTH: int = 3
+    FSM_NODE_TTL_SECONDS: int = 900
+    DEBOUNCE_WINDOW_SECONDS: float = 0.5
+
     # -------------------------------------------------------------
     # EXTERNAL ADAPTER RAILS & MOCK HARNESSES
     # -------------------------------------------------------------

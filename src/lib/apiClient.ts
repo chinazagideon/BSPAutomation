@@ -16,6 +16,7 @@ export interface SandboxStateResponse {
   nlu_controller: SandboxNluController;
   window_state: SandboxWindowState;
   active_frame: SandboxNegotiationFrame | null;
+  context_stack?: SandboxNegotiationFrame[];
   messages: any[];
   webhook_logs: any[];
   nlu_traces: any[];

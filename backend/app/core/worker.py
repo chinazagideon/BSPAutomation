@@ -322,7 +322,7 @@ async def _execute_webhook_processing(
                 merchant_id=merchant_id,
                 customer_phone=sender_phone,
                 raw_text=raw_text,
-                debounce_window_seconds=1.2,
+                debounce_window_seconds=settings.DEBOUNCE_WINDOW_SECONDS,
             )
             if not debounced_text:
                 if webhook_event:
@@ -332,20 +332,6 @@ async def _execute_webhook_processing(
 
         # 2. NDPA Compliance & PII Sanitization
         sanitized_text, _ = sanitize_nigerian_pii_detailed(raw_text)
-
-        # 2B. Deterministic Negotiation Cancellation (ADR-0043 Point 11)
-        from app.core.generation.negotiation import NegotiationFrameManager
-        if NegotiationFrameManager.is_cancellation_intent(sanitized_text):
-            await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
-            cancel_reply = "No wahala! We don clear your pending order. Let us know anytime you're ready to order again."
-            await whatsapp.send_text_message(
-                to_phone=sender_phone,
-                message=cancel_reply,
-                phone_number_id=validated_phone_id,
-            )
-            if webhook_event:
-                webhook_event.processed_at = datetime.now(timezone.utc)
-            return {"status": "CANCELLED_NEGOTIATION"}
 
         # 3. Deterministic Opt-Out Interceptor (STOP / COMOT)
         opt_action = ComplianceService.check_opt_out_keyword(sanitized_text)
@@ -436,328 +422,15 @@ async def _execute_webhook_processing(
                 webhook_event.processed_at = datetime.now(timezone.utc)
             return {"status": "VOICE_NOTE_HANDED_OFF", "media_id": media_id}
 
-        # 6. Multi-Turn Negotiation & Schema-Governed Tool Clarification (ADR-0043)
-        from app.core.generation.negotiation import NegotiationFrameManager, NegotiationFrame
-        from app.core.generation.tools import get_local_tool_dispatcher, ToolStatus
-        from app.contexts.ingress.fast_path import extract_commercial_entities, fast_path_classify
+        # 6. Deterministic FSM & Stateless LLM Boundary Turn Execution
+        from app.core.generation.fsm import ConversationFSMService, FSMTransitionType
+        from app.core.generation.response_formatter import EgressMessageType
 
         catalog_manifest = IngressService.get_cached_catalog_manifest(merchant_id)
         provider_context = IngressService.get_cached_provider_context(merchant_id)
-        waba_name = "Enterprise SME Store"
-        if provider_context and isinstance(provider_context, dict):
-            waba_name = provider_context.get("verified_business_name", waba_name)
-        custom_dict = await IngressService.get_cached_fast_path_dictionary(session, UUID(merchant_id))
-
-        active_frame = await NegotiationFrameManager.get_frame(merchant_id, sender_phone)
-        tool_handled = False
-        tool_reply_text = None
-        tool_buttons = None
-        tool_action = None
-        tool_envelope = None
-
-        # 6A: Direct Interactive Button Slot Binding & Dual ID Scheme (ADR-0043, ADR-0044)
-        if is_interactive and interactive_id:
-            from app.core.generation.response_orchestrator import ResponseOrchestrator
-            from app.core.generation.response_classifier import ResponseStrategy
-
-            envelope = await ResponseOrchestrator.resolve_interactive_action(
-                merchant_id=merchant_id,
-                interactive_id=interactive_id,
-                customer_phone=sender_phone,
-                session=session,
-                merchant_name=waba_name,
-                catalog_manifest=catalog_manifest,
-            )
-            if envelope:
-                tool_handled = True
-                tool_envelope = envelope
-                if envelope.strategy == ResponseStrategy.CHECKOUT_CONVERGED:
-                    tool_action = "GENERATE_VIRTUAL_NUBAN_HOLD"
-                elif envelope.strategy == ResponseStrategy.OUT_OF_STOCK_ALERT:
-                    tool_action = "OUT_OF_STOCK_ALERT"
-                elif envelope.strategy == ResponseStrategy.SINGLE_PRODUCT_QUOTE:
-                    tool_action = "DISPLAY_PRODUCT_DETAIL_CARD"
-                elif envelope.strategy == ResponseStrategy.CATALOG_PRODUCT_LIST:
-                    tool_action = "DISPLAY_CATALOG_LIST"
-                elif envelope.strategy == ResponseStrategy.AGENT_HANDOFF:
-                    tool_action = "AGENT_HANDOFF"
-                else:
-                    tool_action = "DISPATCH_CLARIFICATION"
-
-        # 6B: Plain Text Inbound with Active Negotiation Frame & Pending Offer
-        elif active_frame and not tool_handled:
-            # 6B.1: Check for Affirmation / Negation of a Pending Offer
-            if active_frame.pending_offer:
-                offer = dict(active_frame.pending_offer)
-                if NegotiationFrameManager.is_affirmation_intent(sanitized_text):
-                    logger.info(
-                        "pending_offer_affirmed",
-                        merchant_id=merchant_id,
-                        sender_phone_hash=active_frame.phone_hash,
-                        offer_action=offer.get("action"),
-                        product=offer.get("product"),
-                    )
-                    offer_action = offer.get("action", "SHOW_PRICES")
-                    active_frame.pending_offer = None
-                    await NegotiationFrameManager.save_frame(merchant_id, sender_phone, active_frame)
-
-                    from app.core.generation.response_orchestrator import ResponseOrchestrator
-                    fake_nlu = {
-                        "intent": "PRICE_INQUIRY",
-                        "extracted_entities": {
-                            "product": offer.get("product") or offer.get("query_term", "")
-                        },
-                        "suggested_reply": "Here are our current options and prices:",
-                    }
-                    envelope = await ResponseOrchestrator.resolve(
-                        merchant_id=merchant_id,
-                        nlu_result=fake_nlu,
-                        customer_phone=sender_phone,
-                        raw_message=sanitized_text,
-                        session=session,
-                    )
-                    if envelope:
-                        tool_handled = True
-                        tool_envelope = envelope
-                        tool_action = "DISPLAY_AFFIRMED_CATALOG_LIST"
-                elif NegotiationFrameManager.is_negation_intent(sanitized_text):
-                    logger.info(
-                        "pending_offer_negated",
-                        merchant_id=merchant_id,
-                        sender_phone_hash=active_frame.phone_hash,
-                    )
-                    await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
-                    tool_handled = True
-                    tool_reply_text = "No wahala! We don clear that. Just let us know anytime you need anything."
-                    tool_action = "CANCEL_PENDING_OFFER"
-
-            # Check for topic shift / FAQ / handoff (Frame Preservation per ADR-0043 Point 6)
-            if not tool_handled:
-                quick_fp = fast_path_classify(sanitized_text, custom_dictionary=custom_dict)
-                if quick_fp and quick_fp.intent in ["PRICE_INQUIRY", "DISPATCH_AGENT_HANDOFF", "SHOW_PRODUCT_CATALOG", "RESERVE_APPOINTMENT"]:
-                    await NegotiationFrameManager.touch_frame(merchant_id, sender_phone)
-                    # Fall through to standard NLU to answer inquiry while preserving frame
-                else:
-                    extracted = extract_commercial_entities(sanitized_text)
-                    for k, v in extracted.items():
-                        if v is not None:
-                            active_frame.bound_slots[k] = v
-                    if "location" in extracted:
-                        active_frame.bound_slots["delivery_zone"] = extracted["location"]
-                    if "fulfillment_type" in extracted:
-                        active_frame.bound_slots["fulfillment_type"] = extracted["fulfillment_type"]
-
-                    tool_res = await get_local_tool_dispatcher().evaluate(
-                        intent=active_frame.intent,
-                        slots=active_frame.bound_slots,
-                        catalog_manifest=catalog_manifest,
-                    )
-                    if tool_res:
-                        tool_handled = True
-                        if tool_res.status == ToolStatus.NEEDS_CLARIFICATION:
-                            active_frame.missing_slots = tool_res.missing_slots
-                            await NegotiationFrameManager.save_frame(merchant_id, sender_phone, active_frame)
-                            tool_reply_text = tool_res.clarification.prompt_text if tool_res.clarification else "Please choose an option."
-                            tool_buttons = tool_res.clarification.buttons if tool_res.clarification else None
-                            tool_action = "DISPATCH_CLARIFICATION"
-                        elif tool_res.status == ToolStatus.CONVERGED:
-                            await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
-                            total_kobo = tool_res.calculated_total_kobo or 0
-                            total_naira = f"₦{total_kobo // 100:,}"
-                            loc_str = f" for delivery to {tool_res.bound_slots.get('delivery_zone', 'your address')}" if tool_res.bound_slots.get("fulfillment_type") == "EXPRESS_DELIVERY" else " for warehouse self-pickup"
-                            tool_reply_text = (
-                                f"Sharp! We don reserve your order ({tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}){loc_str}.\n"
-                                f"Total Amount: *{total_naira}* (unpaid order valid for 10 minutes).\n\n"
-                                f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
-                                f"Bank: *Moniepoint MFB*\n"
-                                f"Account Name: *{waba_name}*\n"
-                                f"Account Number: *Allocated on hold confirmation*\n\n"
-                                f"Once payment clear, receipt go land here sharp sharp!"
-                            )
-                            tool_action = "GENERATE_VIRTUAL_NUBAN_HOLD"
-                        elif tool_res.status == ToolStatus.OUT_OF_STOCK:
-                            await NegotiationFrameManager.evict_frame(merchant_id, sender_phone)
-                            tool_reply_text = tool_res.clarification.prompt_text if tool_res.clarification else "Sorry, out of stock."
-                            tool_buttons = tool_res.clarification.buttons if tool_res.clarification else None
-                            tool_action = "OUT_OF_STOCK_ALERT"
-
-        if tool_handled:
-            from app.core.generation.response_formatter import EgressMessageType
-            # Re-read active_frame state to get the updated intent
-            inbound_intent = (
-                "OUT_OF_STOCK_ALERT" if (tool_action == "OUT_OF_STOCK_ALERT" or (tool_envelope and tool_envelope.strategy == ResponseStrategy.OUT_OF_STOCK_ALERT))
-                else ("INSTANT_CHECKOUT_ORDER" if (interactive_id and interactive_id.startswith("SET_SLOT:"))
-                else ("PRICE_INQUIRY" if (interactive_id and interactive_id.startswith("PRODUCT:"))
-                else ("SHOW_PRODUCT_CATALOG" if (interactive_id and "CATALOG" in interactive_id)
-                else ("DISPATCH_AGENT_HANDOFF" if (interactive_id and "AGENT" in interactive_id)
-                else (active_frame.intent if active_frame else "INSTANT_CHECKOUT_ORDER")))))
-            )
-
-            inbound_msg = Message(
-                conversation_id=conversation.id,
-                merchant_id=UUID(merchant_id),
-                sender="user",
-                raw_text=raw_text,
-                sanitized_text=sanitized_text,
-                intent=inbound_intent,
-                is_fast_path=True,
-                tokens_used=0,
-            )
-            session.add(inbound_msg)
-
-            if tool_envelope:
-                if tool_envelope.message_type == EgressMessageType.INTERACTIVE_LIST:
-                    await whatsapp.send_interactive_list(
-                        to_phone=sender_phone,
-                        header_text=tool_envelope.header_text or "Catalog",
-                        body_text=tool_envelope.body_text,
-                        button_title=tool_envelope.button_title or "View Options",
-                        sections=tool_envelope.sections or [],
-                        phone_number_id=validated_phone_id,
-                    )
-                elif tool_envelope.message_type == EgressMessageType.INTERACTIVE_BUTTONS:
-                    await whatsapp.send_interactive_buttons(
-                        to_phone=sender_phone,
-                        body_text=tool_envelope.body_text,
-                        buttons=tool_envelope.buttons or [],
-                        phone_number_id=validated_phone_id,
-                    )
-                else:
-                    await whatsapp.send_text_message(
-                        to_phone=sender_phone,
-                        message=tool_envelope.body_text,
-                        phone_number_id=validated_phone_id,
-                    )
-
-                outbound_msg = Message(
-                    conversation_id=conversation.id,
-                    merchant_id=UUID(merchant_id),
-                    sender="bot",
-                    raw_text=tool_envelope.body_text,
-                    sanitized_text=tool_envelope.body_text,
-                    intent=inbound_intent,
-                    is_fast_path=True,
-                    tokens_used=0,
-                )
-                session.add(outbound_msg)
-
-            elif tool_reply_text:
-                if tool_buttons and isinstance(tool_buttons, list) and len(tool_buttons) > 0:
-                    await whatsapp.send_interactive_buttons(
-                        to_phone=sender_phone,
-                        body_text=tool_reply_text,
-                        buttons=tool_buttons,
-                        phone_number_id=validated_phone_id,
-                    )
-                else:
-                    await whatsapp.send_text_message(
-                        to_phone=sender_phone,
-                        message=tool_reply_text,
-                        phone_number_id=validated_phone_id,
-                    )
-
-                outbound_msg = Message(
-                    conversation_id=conversation.id,
-                    merchant_id=UUID(merchant_id),
-                    sender="bot",
-                    raw_text=tool_reply_text,
-                    sanitized_text=tool_reply_text,
-                    intent=inbound_intent,
-                    is_fast_path=True,
-                    tokens_used=0,
-                )
-                session.add(outbound_msg)
-
-            if tool_action == "AGENT_HANDOFF":
-                card_resp = DeskService.generate_synthesized_context(
-                    ContextInjectionRequest(
-                        customer_name=customer_name,
-                        customer_phone=sender_phone,
-                        chat_history=recent_history + [sanitized_text],
-                    )
-                )
-                await event_bus.publish(
-                    AgentHandoffRequestedEvent(
-                        merchant_id=merchant_id,
-                        conversation_id=str(conversation.id),
-                        customer_phone=sender_phone,
-                        customer_name=customer_name,
-                        summary_card_data=card_resp.summary.model_dump(),
-                        detected_entities={"interactive_id": interactive_id},
-                    )
-                )
-
-            await session.commit()
-            if webhook_event:
-                webhook_event.processed_at = datetime.now(timezone.utc)
-            try:
-                from app.sandbox.state import get_sandbox_store
-                current_frame = await NegotiationFrameManager.get_frame(merchant_id, sender_phone)
-                await get_sandbox_store().append_nlu_trace({
-                    "merchant_id": merchant_id,
-                    "customer_phone": sender_phone,
-                    "customer_name": customer_name,
-                    "raw_text": raw_text,
-                    "sanitized_text": sanitized_text,
-                    "routing_source": "NEGOTIATION_FRAME",
-                    "intent": inbound_intent,
-                    "lead_tier": "HOT",
-                    "urgency_score": 9,
-                    "confidence": 1.0,
-                    "detected_dialect": "Interactive / Slot-Binding",
-                    "action": tool_action,
-                    "tokens_consumed": 0,
-                    "latency_ms": 2.1,
-                    "active_frame": current_frame.model_dump(mode="json") if current_frame else None,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
-            except Exception:
-                pass
-            return {"status": "PROCESSED_VIA_NEGOTIATION_FRAME", "action": tool_action}
-
-
-        # 6C. Execute Cascading NLU Pipeline (Clean Slate)
-        nlu_resp = await CascadingNLUPipeline.process(
-            text=sanitized_text,
-            customer_phone=sender_phone,
-            customer_name=customer_name,
-            previous_context=recent_history,
-            custom_dictionary=custom_dict,
-            catalog_manifest=catalog_manifest,
-            provider_context=provider_context,
-        )
-
-        # If NLU produced a clarification, initialize NegotiationFrame in Redis
-        if nlu_resp.action == "DISPATCH_CLARIFICATION":
-            new_frame = NegotiationFrame(
-                merchant_id=merchant_id,
-                phone_hash="",
-                active_tool="CheckoutOrderTool",
-                intent=nlu_resp.intent,
-                bound_slots=nlu_resp.extracted_entities.get("bound_slots", {}),
-                missing_slots=nlu_resp.extracted_entities.get("missing_slots", []),
-            )
-            await NegotiationFrameManager.save_frame(merchant_id, sender_phone, new_frame)
-
-        # 7. Record Inbound Message
-        inbound_msg = Message(
-            conversation_id=conversation.id,
-            merchant_id=UUID(merchant_id),
-            sender="user",
-            raw_text=raw_text,
-            sanitized_text=sanitized_text,
-            intent=nlu_resp.intent,
-            is_fast_path=(nlu_resp.routing_source == "FAST_PATH"),
-            tokens_used=nlu_resp.tokens_consumed,
-        )
-        session.add(inbound_msg)
-
-        # 8. Automated Egress Response via ResponseOrchestrator (ADR-0044)
-        from app.core.generation.response_orchestrator import ResponseOrchestrator
-        from app.core.generation.response_classifier import ResponseStrategy
-        from app.core.generation.response_formatter import EgressMessageType
-
         merchant_name_val = "Enterprise SME Store"
+        if provider_context and isinstance(provider_context, dict):
+            merchant_name_val = provider_context.get("verified_business_name", merchant_name_val)
         try:
             from app.contexts.core.models import Merchant
             merchant_obj = await session.get(Merchant, UUID(merchant_id))
@@ -766,40 +439,39 @@ async def _execute_webhook_processing(
         except Exception:
             pass
 
-        envelope = await ResponseOrchestrator.resolve(
+        custom_dict = await IngressService.get_cached_fast_path_dictionary(session, UUID(merchant_id))
+
+        outcome = await ConversationFSMService.process_turn(
             merchant_id=merchant_id,
-            nlu_result=nlu_resp,
             customer_phone=sender_phone,
-            raw_message=sanitized_text,
+            customer_name=customer_name,
+            sanitized_text=sanitized_text,
+            recent_history=recent_history,
             session=session,
             merchant_name=merchant_name_val,
+            custom_dictionary=custom_dict,
+            catalog_manifest=catalog_manifest,
+            provider_context=provider_context,
+            is_interactive=is_interactive,
+            interactive_id=interactive_id,
         )
 
-        if envelope:
-            # Register pending offer for catalog lists or quotes to power zero-token affirmations
-            if envelope.strategy in [ResponseStrategy.CATALOG_PRODUCT_LIST, ResponseStrategy.SINGLE_PRODUCT_QUOTE, ResponseStrategy.FULL_CATALOG_BROWSE]:
-                target_prod = nlu_resp.extracted_entities.get("product") or ""
-                frame_to_update = active_frame or NegotiationFrame(
-                    merchant_id=merchant_id,
-                    phone_hash="",
-                    active_tool="CheckoutOrderTool",
-                    intent=nlu_resp.intent,
-                    bound_slots={},
-                    missing_slots=[],
-                )
-                frame_to_update.pending_offer = {
-                    "action": "SHOW_PRICES",
-                    "product": target_prod,
-                    "strategy": envelope.strategy.value,
-                }
-                await NegotiationFrameManager.save_frame(merchant_id, sender_phone, frame_to_update)
-                logger.info(
-                    "pending_offer_registered",
-                    merchant_id=merchant_id,
-                    product=target_prod,
-                    strategy=envelope.strategy.value,
-                )
+        # 7. Record Inbound Message & Dispatch Egress Envelope
+        is_fast = outcome.routing_source in ("FAST_PATH", "NEGOTIATION_FRAME")
+        inbound_msg = Message(
+            conversation_id=conversation.id,
+            merchant_id=UUID(merchant_id),
+            sender="user",
+            raw_text=raw_text,
+            sanitized_text=sanitized_text,
+            intent=outcome.intent,
+            is_fast_path=is_fast,
+            tokens_used=outcome.tokens_consumed,
+        )
+        session.add(inbound_msg)
 
+        envelope = outcome.envelope
+        if envelope:
             if envelope.message_type == EgressMessageType.INTERACTIVE_LIST:
                 await whatsapp.send_interactive_list(
                     to_phone=sender_phone,
@@ -829,15 +501,16 @@ async def _execute_webhook_processing(
                 sender="bot",
                 raw_text=envelope.body_text,
                 sanitized_text=envelope.body_text,
-                intent=nlu_resp.intent,
-                is_fast_path=(nlu_resp.routing_source == "FAST_PATH"),
+                intent=outcome.intent,
+                is_fast_path=is_fast,
                 tokens_used=0,
             )
             session.add(outbound_msg)
 
-        # 9. Cross-Context Agent Desk Escalation (ADR-0036)
-        if nlu_resp.action == "DISPATCH_AGENT_HANDOFF":
-            await session.commit()
+        await session.commit()
+
+        # 8. Cross-Context Agent Desk Escalation (ADR-0036)
+        if outcome.action in ("DISPATCH_AGENT_HANDOFF", "AGENT_HANDOFF"):
             card_resp = DeskService.generate_synthesized_context(
                 ContextInjectionRequest(
                     customer_name=customer_name,
@@ -852,7 +525,7 @@ async def _execute_webhook_processing(
                     customer_phone=sender_phone,
                     customer_name=customer_name,
                     summary_card_data=card_resp.summary.model_dump(),
-                    detected_entities=nlu_resp.extracted_entities,
+                    detected_entities=outcome.extracted_entities,
                 )
             )
 
@@ -861,35 +534,58 @@ async def _execute_webhook_processing(
 
         try:
             from app.sandbox.state import get_sandbox_store
-            current_frame = await NegotiationFrameManager.get_frame(merchant_id, sender_phone)
             await get_sandbox_store().append_nlu_trace({
                 "merchant_id": merchant_id,
                 "customer_phone": sender_phone,
                 "customer_name": customer_name,
                 "raw_text": raw_text,
                 "sanitized_text": sanitized_text,
-                "routing_source": nlu_resp.routing_source,
-                "intent": nlu_resp.intent,
-                "lead_tier": nlu_resp.lead_tier,
-                "urgency_score": nlu_resp.urgency_score,
-                "confidence": nlu_resp.confidence,
-                "detected_dialect": nlu_resp.detected_dialect,
-                "action": nlu_resp.action,
-                "extracted_entities": nlu_resp.extracted_entities,
-                "tokens_consumed": nlu_resp.tokens_consumed,
-                "latency_ms": nlu_resp.latency_ms,
+                "routing_source": outcome.routing_source,
+                "fsm_transition": outcome.transition.value,
+                "intent": outcome.intent,
+                "lead_tier": outcome.lead_tier,
+                "urgency_score": outcome.urgency_score,
+                "confidence": outcome.confidence,
+                "detected_dialect": outcome.detected_dialect,
+                "action": outcome.action,
+                "extracted_entities": outcome.extracted_entities,
+                "tokens_consumed": outcome.tokens_consumed,
+                "latency_ms": outcome.latency_ms,
                 "strategy": envelope.strategy.value if envelope else None,
-                "active_frame": current_frame.model_dump(mode="json") if current_frame else None,
+                "active_frame": outcome.active_frame,
+                "context_stack": outcome.context_stack,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
         except Exception:
             pass
 
+        if outcome.transition == FSMTransitionType.CANCEL_FLOW:
+            return {
+                "status": "CANCELLED_NEGOTIATION",
+                "action": outcome.action,
+                "transition": outcome.transition.value,
+            }
+
+        if outcome.transition in (
+            FSMTransitionType.PROTOCOL_DIRECT,
+            FSMTransitionType.ADVANCE_FRAME,
+            FSMTransitionType.MUTATE_SLOTS,
+            FSMTransitionType.AFFIRM_OFFER,
+            FSMTransitionType.NEGATE_OFFER,
+        ):
+            return {
+                "status": "PROCESSED_VIA_NEGOTIATION_FRAME",
+                "action": outcome.action,
+                "intent": outcome.intent,
+                "transition": outcome.transition.value,
+            }
+
         return {
             "status": "PROCESSED",
             "merchant_id": merchant_id,
-            "intent": nlu_resp.intent,
-            "routing_source": nlu_resp.routing_source,
+            "intent": outcome.intent,
+            "routing_source": outcome.routing_source,
+            "transition": outcome.transition.value,
         }
 
 

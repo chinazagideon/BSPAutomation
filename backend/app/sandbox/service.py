@@ -191,7 +191,8 @@ class SandboxOrchestrationService:
 
         channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
         merchant_id = channel_ctx.merchant_id if channel_ctx else str(ALABA_AGRO_MERCHANT_ID)
-        active_frame = await NegotiationFrameManager.get_frame(merchant_id, customer_phone.lstrip("+"))
+        stack = await NegotiationFrameManager.load_stack(merchant_id, customer_phone.lstrip("+"))
+        active_frame = stack.active_frame
 
         return {
             "merchants": [
@@ -213,6 +214,7 @@ class SandboxOrchestrationService:
             "nlu_controller": nlu_ctrl.model_dump(),
             "window_state": window,
             "active_frame": active_frame.model_dump(mode="json") if active_frame else None,
+            "context_stack": [f.model_dump(mode="json") for f in stack.frames],
             "messages": messages,
             "webhook_logs": webhook_logs,
             "nlu_traces": nlu_traces,

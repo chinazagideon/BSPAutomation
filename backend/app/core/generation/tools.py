@@ -6,12 +6,15 @@ Strictly PII-protected, deterministic, zero-token parameter validation and clari
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Dict, Any, Optional, List, Tuple
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 import re
 import json
 import structlog
 
+from app.adapters.base import PiiSanitizedSlotMap
 from app.contexts.compliance.services import sanitize_nigerian_pii_detailed
+
+_SLOT_MAP_VALIDATOR = TypeAdapter(PiiSanitizedSlotMap)
 
 logger = structlog.get_logger(__name__)
 
@@ -227,14 +230,8 @@ class CheckoutOrderTool(LocalTool):
         stock_checker: Optional[Any] = None,
         **kwargs: Any,
     ) -> ToolEvaluationResult:
-        # 1. PII Sanitization across all slot inputs
-        sanitized_slots: Dict[str, Any] = {}
-        for k, v in slots.items():
-            if isinstance(v, str):
-                cleaned, _ = sanitize_nigerian_pii_detailed(v)
-                sanitized_slots[k] = cleaned
-            else:
-                sanitized_slots[k] = v
+        # 1. Declarative PII Sanitization across all slot inputs via PiiSanitizedSlotMap
+        sanitized_slots = _SLOT_MAP_VALIDATOR.validate_python(slots)
 
         catalog = parse_catalog_manifest(catalog_manifest)
         bound: Dict[str, Any] = dict(sanitized_slots)

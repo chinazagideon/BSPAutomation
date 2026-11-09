@@ -67,9 +67,11 @@ export interface SandboxNegotiationFrame {
   phone_hash: string;
   active_tool: string;
   intent: string;
+  node_type?: 'TRANSACTIONAL' | 'ATOMIC_QUERY' | 'HANDOFF';
   bound_slots: Record<string, any>;
   missing_slots: string[];
   pending_offer?: Record<string, any> | null;
+  expires_at?: number;
 }
 
 export interface ChatMessage {
