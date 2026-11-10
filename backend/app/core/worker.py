@@ -260,6 +260,8 @@ async def _execute_webhook_processing(
             )
             webhook_event = res.scalar_one_or_none()
             if webhook_event:
+                if webhook_event.processed_at is not None:
+                    return {"status": "SKIPPED_ALREADY_PROCESSED", "event_id": event_id}
                 payload = webhook_event.raw_payload
                 if not resolved_provider_slug:
                     resolved_provider_slug = webhook_event.provider

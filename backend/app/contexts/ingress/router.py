@@ -92,6 +92,7 @@ async def receive_whatsapp_webhook(provider: str, request: Request):
 
     # 4. Scoped RLS Audit Persistence & ARQ Redis Queueing
     resolved_provider_name = adapter.provider_name if provider.lower() != "whatsapp" else settings.WHATSAPP_BSP_PROVIDER
+    skip_enqueue = request.headers.get("x-sandbox-inline-worker") == "1"
     async with tenant_session_scope(merchant_id_str) as session:
         return await IngressService.ingest_webhook_fast_ack(
             session=session,
@@ -99,6 +100,7 @@ async def receive_whatsapp_webhook(provider: str, request: Request):
             payload=payload,
             provider=resolved_provider_name,
             signature_verified=is_valid_sig,
+            skip_enqueue=skip_enqueue,
         )
 
 

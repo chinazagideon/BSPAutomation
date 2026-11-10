@@ -628,19 +628,24 @@ class ConversationFSMService:
             ResponseStrategy.FULL_CATALOG_BROWSE,
         ):
             target_prod = nlu_resp.extracted_entities.get("product") or ""
-            top_frame = stack.peek() or NegotiationFrame(
+            atomic_bound_slots = {
+                k: nlu_resp.extracted_entities[k]
+                for k in ("offering_id", "sku", "product", "product_name")
+                if nlu_resp.extracted_entities.get(k) is not None
+            }
+            top_frame = NegotiationFrame(
                 merchant_id=m_id,
-                active_tool="CheckoutOrderTool",
+                active_tool="ProductCatalog",
                 intent=nlu_resp.intent,
                 node_type="ATOMIC_QUERY",
-                bound_slots={},
+                bound_slots=atomic_bound_slots,
                 missing_slots=[],
+                pending_offer={
+                    "action": "SHOW_PRICES",
+                    "product": target_prod,
+                    "strategy": envelope.strategy.value,
+                },
             )
-            top_frame.pending_offer = {
-                "action": "SHOW_PRICES",
-                "product": target_prod,
-                "strategy": envelope.strategy.value,
-            }
             stack.push(top_frame)
             await NegotiationFrameManager.save_stack(m_id, customer_phone, stack)
 

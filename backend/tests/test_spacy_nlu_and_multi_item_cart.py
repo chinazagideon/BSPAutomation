@@ -223,3 +223,41 @@ async def test_multi_item_bulk_cart_convergence_and_clarification():
     assert "₦402,000" in turn3.envelope.body_text
     assert "2x Dangote Sugar 50kg" in turn3.envelope.body_text
     assert "3x Mama Gold Rice 50kg" in turn3.envelope.body_text
+
+
+@pytest.mark.asyncio
+async def test_single_item_price_inquiry_does_not_create_duplicate_line_items():
+    """
+    Regression test: A single customer query ("How much be rice for una store?")
+    or a debounced duplicate burst must resolve to PRICE_INQUIRY with a single
+    `product="rice"` slot and NEVER populate `line_items` on the LIFO ContextStack.
+    """
+    engine = get_spacy_nlu_engine()
+    merchant_id = str(uuid4())
+    phone = "+2348055443322"
+    await NegotiationFrameManager.evict_frame(merchant_id, phone)
+
+    parsed_single = engine.predict_intent_and_slots("How much be rice for una store?")
+    assert parsed_single.intent == "PRICE_INQUIRY"
+    assert parsed_single.slots.get("product") == "rice"
+    assert "line_items" not in parsed_single.slots
+
+    parsed_dup = engine.predict_intent_and_slots(
+        "How much be rice for una store?\nHow much be rice for una store?"
+    )
+    assert parsed_dup.intent == "PRICE_INQUIRY"
+    assert parsed_dup.slots.get("product") == "rice"
+    assert "line_items" not in parsed_dup.slots
+
+    turn = await ConversationFSMService.process_turn(
+        merchant_id=merchant_id,
+        customer_phone=phone,
+        customer_name="Kemi Adebayo",
+        sanitized_text="How much be rice for una store?",
+    )
+    assert turn.intent == "PRICE_INQUIRY"
+    assert turn.active_frame is not None
+    assert turn.active_frame["intent"] == "PRICE_INQUIRY"
+    assert turn.active_frame["bound_slots"] == {"product": "rice"}
+    assert "line_items" not in turn.active_frame["bound_slots"]
+

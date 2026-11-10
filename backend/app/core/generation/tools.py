@@ -247,14 +247,28 @@ class CheckoutOrderTool(LocalTool):
         # MULTI-ITEM BULK CART BRANCH (line_items > 1)
         # ---------------------------------------------------------------------
         raw_line_items = bound.get("line_items")
-        if isinstance(raw_line_items, list) and len(raw_line_items) > 1:
-            return await self._evaluate_multi_item_cart(
-                bound=bound,
-                line_items=raw_line_items,
-                catalog=catalog,
-                merchant_id=merchant_id,
-                stock_checker=stock_checker,
-            )
+        if isinstance(raw_line_items, list):
+            deduped_items: List[Dict[str, Any]] = []
+            seen_keys = set()
+            for it in raw_line_items:
+                if not isinstance(it, dict):
+                    continue
+                key = ((it.get("sku") or "").upper(), (it.get("product") or "").lower())
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                deduped_items.append(it)
+            if len(deduped_items) > 1:
+                bound["line_items"] = deduped_items
+                return await self._evaluate_multi_item_cart(
+                    bound=bound,
+                    line_items=deduped_items,
+                    catalog=catalog,
+                    merchant_id=merchant_id,
+                    stock_checker=stock_checker,
+                )
+            else:
+                bound.pop("line_items", None)
 
         # ---------------------------------------------------------------------
         # STEP 1: Resolve Offering ID / SKU & Disambiguate Products

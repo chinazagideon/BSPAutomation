@@ -304,6 +304,7 @@ class SandboxOrchestrationService:
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"x-hub-signature-256", sig_header.encode("utf-8")),
+                (b"x-sandbox-inline-worker", b"1" if req.execute_worker_inline else b"0"),
             ],
             "query_string": b"",
             "client": ("127.0.0.1", 50000),
@@ -418,7 +419,8 @@ class SandboxOrchestrationService:
         }
         await store.append_webhook_log(wh_log)
 
-        active_frame = await NegotiationFrameManager.get_frame(merchant_id, req.customer_phone.lstrip("+"))
+        stack = await NegotiationFrameManager.load_stack(merchant_id, req.customer_phone.lstrip("+"))
+        active_frame = stack.active_frame
         messages = await store.get_messages(phone_number_id=req.phone_number_id)
         window = await store.check_customer_service_window(req.phone_number_id, req.customer_phone)
         nlu_traces = await store.get_nlu_traces()
@@ -430,6 +432,7 @@ class SandboxOrchestrationService:
             "worker_result": worker_result,
             "webhook_log": wh_log,
             "active_frame": active_frame.model_dump(mode="json") if active_frame else None,
+            "context_stack": [f.model_dump(mode="json") for f in stack.frames],
             "window_state": window,
             "messages": messages[-10:],
             "latest_nlu_trace": nlu_traces[0] if nlu_traces else None,

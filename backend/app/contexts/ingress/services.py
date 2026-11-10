@@ -179,6 +179,7 @@ class IngressService:
         payload: Dict[str, Any],
         provider: str = "META_CLOUD",
         signature_verified: bool = True,
+        skip_enqueue: bool = False,
     ) -> Dict[str, Any]:
         """
         Ingests incoming WhatsApp BSP webhook and generates an instant <25ms 200 OK ACK.
@@ -206,11 +207,14 @@ class IngressService:
         inject_trace_context(carrier)
         trace_parent = carrier.get("traceparent")
 
-        job_id = await enqueue_webhook_job(
-            merchant_id=str(merchant_id),
-            event_id=str(webhook_event.id),
-            trace_parent=trace_parent,
-        )
+        if skip_enqueue:
+            job_id = f"inline-job-{webhook_event.id}"
+        else:
+            job_id = await enqueue_webhook_job(
+                merchant_id=str(merchant_id),
+                event_id=str(webhook_event.id),
+                trace_parent=trace_parent,
+            )
 
         return {
             "status": "EVENT_RECEIVED",

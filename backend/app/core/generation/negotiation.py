@@ -325,7 +325,12 @@ class NegotiationFrameManager:
                 await redis.delete(buffer_key)
                 await redis.delete(lock_key)
                 if items:
-                    return "\n".join(items)
+                    decoded = [m if isinstance(m, str) else m.decode("utf-8") for m in items]
+                    deduped = [
+                        m for idx, m in enumerate(decoded)
+                        if idx == 0 or m.strip() != decoded[idx - 1].strip()
+                    ]
+                    return "\n".join(deduped)
             else:
                 return ""
         except Exception as err:

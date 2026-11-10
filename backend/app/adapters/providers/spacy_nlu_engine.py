@@ -156,7 +156,7 @@ class SpacyNLUEngine:
             return False
 
     def _register_token_matchers(self) -> None:
-        if not self._matcher:
+        if self._matcher is None:
             return
         # Rejection clause triggers in spaCy Matcher
         self._matcher.add(
@@ -337,7 +337,7 @@ class SpacyNLUEngine:
             except ValueError:
                 pass
 
-        # 4. Deduplicate overlapping product spans (prefer specific SKU over generic category)
+        # 4. Deduplicate overlapping & repeated product spans (prefer specific SKU over generic category)
         deduped_products = self._deduplicate_product_spans(product_spans, active_bound_slots, has_mutation_marker)
 
         # 5. Pair (QUANTITY, PRODUCT/SKU) for Single-Item and Multi-Item Carts
@@ -349,7 +349,19 @@ class SpacyNLUEngine:
             )
             entities["quantity"] = primary_q["qty_str"]
 
-        if len(deduped_products) == 1:
+        is_pure_price_or_stock_query = bool(
+            re.search(
+                r"(?:how\s*much|wetin\s*be\s*the\s*price|price\s*dey|dm\s*price|catalog|do\s*you\s*have|you\s*get|is\s*there|any\s*stock|in\s*stock|available|dey\s*(?:store|shop|ground)|una\s*get)\b",
+                lower,
+            )
+            and not re.search(
+                r"(?:i\s*wan\s*buy|i\s*wan\s*order|pack\s*\d+|deliver\s*to|drop\s*am\s*(?:for|to|at|in)|i\s*need\s*\d+|give\s*me\s*\d+|i\s*want\s*\d+|buy\s*\d+)",
+                lower,
+            )
+            and not quantity_spans
+        )
+
+        if len(deduped_products) == 1 or (len(deduped_products) >= 2 and is_pure_price_or_stock_query):
             p = deduped_products[0]
             entities["product"] = p["product"]
             if p.get("sku"):
@@ -357,7 +369,7 @@ class SpacyNLUEngine:
                 entities["offering_id"] = p["offering_id"]
                 entities["product_name"] = p["product_name"]
         elif len(deduped_products) >= 2:
-            # Multi-item bulk order: pair each product span with its closest preceding quantity
+            # Multi-item bulk order: pair each distinct product span with its closest preceding quantity
             line_items: List[Dict[str, Any]] = []
             used_q_indices: Set[int] = set()
             for idx, p in enumerate(deduped_products):
@@ -426,7 +438,8 @@ class SpacyNLUEngine:
         has_mutation_marker: bool,
     ) -> List[Dict[str, Any]]:
         """
-        Merges adjacent/overlapping SKU + generic PRODUCT spans (e.g. 'Mama Gold' + 'rice')
+        Merges adjacent/overlapping SKU + generic PRODUCT spans (e.g. 'Mama Gold' + 'rice'),
+        collapses duplicate mentions of the exact same (sku, product) across the utterance,
         and filters out already-bound slots if in a contrastive mutation turn.
         """
         if not spans:
@@ -450,6 +463,20 @@ class SpacyNLUEngine:
                     prev["end_char"] = max(prev["end_char"], sp["end_char"])
                 continue
             merged.append(sp)
+
+        # Collapse repeated mentions of the exact same (sku, product) identity across the utterance
+        unique_spans: List[Dict[str, Any]] = []
+        seen_identities: Set[Tuple[str, str]] = set()
+        for sp in merged:
+            sku_key = (sp.get("sku") or "").upper()
+            prod_key = (sp.get("product") or "").lower()
+            identity = (sku_key, prod_key)
+            if identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+            unique_spans.append(sp)
+
+        merged = unique_spans
 
         # If this is a mutation turn and 2 spans remain where one matches active_bound_slots, drop the old bound span
         if has_mutation_marker and active_bound_slots and len(merged) > 1:
@@ -658,6 +685,9 @@ class SpacyNLUEngine:
             has_drop_am_delivery=has_drop_am_delivery,
             expected_slot_hint=expected_slot_hint,
         )
+
+        if intent == "PRICE_INQUIRY":
+            entities.pop("line_items", None)
 
         latency = (time.perf_counter() - start_time) * 1000.0
         return ParsedTurnInput(
