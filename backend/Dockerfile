@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Pre-train spaCy model during image build so containers start instantly
-RUN python -m app.scripts.train_spacy_nlu
+# RUN python -m app.scripts.train_spacy_nlu
 
 # Copy backend application source code
 COPY . .
