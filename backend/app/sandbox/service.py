@@ -367,6 +367,7 @@ class SandboxOrchestrationService:
                     ctx={
                         "audited_http_client": http_client,
                         "provider_slug": req.provider,
+                        "is_sandbox_turn": True,
                     },
                     merchant_id=merchant_id,
                     event_id=event_id,

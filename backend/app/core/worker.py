@@ -260,8 +260,6 @@ async def _execute_webhook_processing(
             )
             webhook_event = res.scalar_one_or_none()
             if webhook_event:
-                if webhook_event.processed_at is not None:
-                    return {"status": "SKIPPED_ALREADY_PROCESSED", "event_id": event_id}
                 payload = webhook_event.raw_payload
                 if not resolved_provider_slug:
                     resolved_provider_slug = webhook_event.provider
@@ -270,9 +268,10 @@ async def _execute_webhook_processing(
             return {"status": "SKIPPED_NO_PAYLOAD"}
 
         # Dynamic BSP adapter resolution governed by incoming provider (ADR-0047)
+        is_sandbox_turn = bool(ctx and ctx.get("is_sandbox_turn"))
         whatsapp = get_whatsapp_bsp_adapter(
             http_client=http_client,
-            provider_slug=resolved_provider_slug,
+            provider_slug="sandbox" if is_sandbox_turn else resolved_provider_slug,
         )
 
         # 1. Unpack & Normalize Provider Payload (ADR-0047)
