@@ -22,3 +22,6 @@ ENV/
 .compiler
 kudiflow-analysis.md
 btw.md
+# Trained NLU & ML Models
+backend/models/
+models/

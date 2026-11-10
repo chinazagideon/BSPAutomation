@@ -123,8 +123,13 @@ class CentralInferenceEngine(InferenceEnginePort):
                             waba_name = "Enterprise SME Store"
                             if context and "provider_context" in context.slices and context.slices["provider_context"].structured_data:
                                 waba_name = context.slices["provider_context"].structured_data.get("verified_business_name", waba_name)
+                            line_items = tool_res.bound_slots.get("line_items")
+                            if isinstance(line_items, list) and len(line_items) > 1:
+                                order_summary_str = tool_res.bound_slots.get("product_name", "items")
+                            else:
+                                order_summary_str = f"{tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}"
                             suggested_reply = (
-                                f"Sharp! We don reserve your order ({tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}){loc_str}.\n"
+                                f"Sharp! We don reserve your order ({order_summary_str}){loc_str}.\n"
                                 f"Total Amount: *{total_naira_str}* (10-minute anti-ghosting hold).\n\n"
                                 f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
                                 f"Bank: *Moniepoint MFB*\n"

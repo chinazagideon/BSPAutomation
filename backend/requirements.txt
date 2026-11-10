@@ -23,3 +23,4 @@ opentelemetry-exporter-otlp-proto-grpc>=1.27.0
 structlog>=24.4.0
 onnxruntime>=1.19.0
 tokenizers>=0.20.0
+spacy>=3.7.0

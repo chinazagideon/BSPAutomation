@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 from app.core.config import settings
 from app.contexts.knowledge.models import KnowledgeEntry
 from app.contexts.knowledge.schemas import KnowledgeEntryCreate, KnowledgeEntryUpdate
-from app.contexts.knowledge.offering_schemas import CoreOfferingDTO, OfferingType
+from app.contexts.knowledge.offering_schemas import CoreOfferingDTO, OfferingType, compute_offering_id
 from app.core.redis import get_redis_client
 
 logger = structlog.get_logger(__name__)
@@ -124,10 +124,15 @@ def _entry_to_dto(entry: KnowledgeEntry) -> CoreOfferingDTO:
     if stock_qty is not None and stock_qty <= 0 and offering_type == OfferingType.PHYSICAL_PRODUCT:
         is_available = False
 
+    sku_val = meta.get("sku", str(entry.id))
+    m_str = str(entry.merchant_id) if entry.merchant_id else None
+    canonical_offering_id = meta.get("offering_id") or (str(entry.id) if entry.id else compute_offering_id(m_str, sku_val))
+
     return CoreOfferingDTO(
-        id=str(entry.id) if entry.id else None,
-        merchant_id=str(entry.merchant_id) if entry.merchant_id else None,
-        sku=meta.get("sku", str(entry.id)),
+        id=str(entry.id) if entry.id else canonical_offering_id,
+        offering_id=canonical_offering_id,
+        merchant_id=m_str,
+        sku=sku_val,
         title=entry.title,
         description=entry.content,
         offering_type=offering_type,
@@ -151,9 +156,11 @@ def _dict_to_dto(d: Dict[str, Any], merchant_id: Optional[str] = None) -> CoreOf
     is_available = d.get("is_available", d.get("in_stock", True))
     if d.get("stock_quantity", 1) <= 0:
         is_available = False
+    canonical_id = d.get("offering_id") or compute_offering_id(merchant_id, sku)
 
     return CoreOfferingDTO(
-        id=f"demo-{sku}",
+        id=canonical_id,
+        offering_id=canonical_id,
         merchant_id=merchant_id,
         sku=sku,
         title=title,
@@ -366,12 +373,15 @@ class KnowledgeService:
                 seeded_entries.append(existing)
                 continue
 
+            offering_uuid_str = compute_offering_id(merchant_uuid, item["sku"])
             entry = KnowledgeEntry(
+                id=UUID(offering_uuid_str),
                 merchant_id=merchant_uuid,
                 entry_type="CATALOG",
                 title=item["title"],
                 content=item["content"],
                 metadata_json={
+                    "offering_id": offering_uuid_str,
                     "sku": item["sku"],
                     "category": item["category"],
                     "search_keywords": item["search_keywords"],
@@ -392,12 +402,27 @@ class KnowledgeService:
         return seeded_entries
 
     @classmethod
+    async def get_offering(
+        cls,
+        identifier: str,
+        merchant_id: Optional[Union[UUID, str]] = None,
+        session: Optional[AsyncSession] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> Optional[CoreOfferingDTO]:
+        """Retrieves a catalog offering by canonical offering_id (UUID) or SKU string."""
+        return await cls.get_offering_by_sku(
+            sku=identifier,
+            merchant_id=merchant_id,
+            session=session or db,
+        )
+
+    @classmethod
     async def get_offering_by_sku(
         cls,
         *args: Any,
         **kwargs: Any,
     ) -> Optional[CoreOfferingDTO]:
-        """Retrieves a single offering by SKU with DB search and test/dev mock fallback."""
+        """Retrieves a single offering by offering_id (UUID) or SKU with DB search and test/dev mock fallback."""
         session: Optional[AsyncSession] = None
         merchant_id: Optional[Union[UUID, str]] = None
         sku: str = ""
@@ -416,19 +441,36 @@ class KnowledgeService:
             merchant_id = kwargs.get("merchant_id")
             session = kwargs.get("session")
         else:
-            sku = kwargs.get("sku", "")
+            sku = kwargs.get("sku") or kwargs.get("offering_id") or kwargs.get("identifier") or ""
             merchant_id = kwargs.get("merchant_id")
             session = kwargs.get("session")
 
-        sku = sku.strip()
+        sku = str(sku).strip()
         merchant_uuid = UUID(str(merchant_id)) if merchant_id else None
+        parsed_offering_uuid: Optional[UUID] = None
+        try:
+            parsed_offering_uuid = UUID(sku)
+        except Exception:
+            parsed_offering_uuid = None
 
-        # 1. Search in DB
+        # 1. Search in DB (by primary key id if UUID, or metadata_json->>'sku' / metadata_json->>'offering_id')
         async def _query_db(sess: AsyncSession) -> Optional[CoreOfferingDTO]:
+            id_or_sku_cond = (
+                or_(
+                    KnowledgeEntry.id == parsed_offering_uuid,
+                    KnowledgeEntry.metadata_json.op("->>")("offering_id") == str(parsed_offering_uuid),
+                    KnowledgeEntry.metadata_json.op("->>")("sku") == sku,
+                )
+                if parsed_offering_uuid
+                else or_(
+                    KnowledgeEntry.metadata_json.op("->>")("sku") == sku,
+                    KnowledgeEntry.metadata_json.op("->>")("offering_id") == sku,
+                )
+            )
             conditions = [
                 KnowledgeEntry.entry_type == "CATALOG",
                 KnowledgeEntry.is_active.is_(True),
-                KnowledgeEntry.metadata_json.op("->>")("sku") == sku,
+                id_or_sku_cond,
             ]
             if merchant_uuid:
                 conditions.append(or_(KnowledgeEntry.merchant_id == merchant_uuid, KnowledgeEntry.merchant_id.is_(None)))
@@ -456,9 +498,22 @@ class KnowledgeService:
         # 2. Environment safety gate on fallback
         env = getattr(settings, "ENVIRONMENT", "development").lower()
         if env not in ["production"]:
-            for item in DEFAULT_DEMO_OFFERINGS:
-                if item["sku"].lower() == sku.lower():
-                    return _dict_to_dto(item, str(merchant_id) if merchant_id else None)
+            m_str = str(merchant_id) if merchant_id else None
+            from app.contexts.knowledge.seed_data import (
+                ALABA_AGRO_OFFERINGS,
+                LEKKI_GLOW_OFFERINGS,
+                HORIZON_TECH_OFFERINGS,
+            )
+            all_demo_items = DEFAULT_DEMO_OFFERINGS + ALABA_AGRO_OFFERINGS + LEKKI_GLOW_OFFERINGS + HORIZON_TECH_OFFERINGS
+            for item in all_demo_items:
+                candidate_id_scoped = compute_offering_id(m_str, item["sku"])
+                candidate_id_global = compute_offering_id(None, item["sku"])
+                if (
+                    item["sku"].lower() == sku.lower()
+                    or candidate_id_scoped.lower() == sku.lower()
+                    or candidate_id_global.lower() == sku.lower()
+                ):
+                    return _dict_to_dto(item, m_str)
 
         return None
 
