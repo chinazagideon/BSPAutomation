@@ -1,5 +1,6 @@
 """Local In-Memory Recorder Adapter Base for Non-Meta / Test BSP Implementations."""
 
+import uuid
 from typing import Any, Dict, List, Optional
 
 from app.adapters.base import CarouselMessage, NormalizedInboundEnvelope, WhatsAppBSPPort
@@ -38,6 +39,10 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
     def normalize_inbound_webhook(self, payload: Dict[str, Any]) -> NormalizedInboundEnvelope:
         return normalize_cloud_api_webhook_payload(payload, provider_name=self.provider_name)
 
+    def clear(self) -> None:
+        """Purges recorded messages in memory."""
+        self.sent_messages.clear()
+
     def _record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         self.sent_messages.append(record)
         return record
@@ -49,7 +54,7 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._record({
-            "message_id": f"wamid.mock.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "message": message,
             "status": "DELIVERED",
@@ -64,7 +69,7 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._record({
-            "message_id": f"wamid.mock.interactive.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.interactive.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "body": body_text,
             "buttons": buttons,
@@ -81,7 +86,7 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._record({
-            "message_id": f"wamid.mock.template.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.template.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "template": template_name,
             "language": language_code,
@@ -100,7 +105,7 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._record({
-            "message_id": f"wamid.mock.media.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.media.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "media_type": media_type,
             "media_url": media_url,
@@ -120,7 +125,7 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._record({
-            "message_id": f"wamid.mock.list.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.list.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "header": header_text,
             "body": body_text,
@@ -137,7 +142,7 @@ class BaseInMemoryWhatsAppAdapter(WhatsAppBSPPort):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._record({
-            "message_id": f"wamid.mock.carousel.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.carousel.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "body": carousel.body_text,
             "cards": [c.model_dump() for c in carousel.cards],

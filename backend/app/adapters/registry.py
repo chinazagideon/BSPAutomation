@@ -36,6 +36,15 @@ class WhatsAppProviderRegistry:
         return cls._sandbox_instance
 
     @classmethod
+    def reset_adapters(cls) -> None:
+        """Purges recorded messages across active in-memory and sandbox adapters."""
+        if cls._sandbox_instance is not None and hasattr(cls._sandbox_instance, "clear"):
+            cls._sandbox_instance.clear()
+        for instance in cls._instances.values():
+            if hasattr(instance, "clear"):
+                instance.clear()
+
+    @classmethod
     def resolve(
         cls,
         provider_slug: Optional[str] = None,

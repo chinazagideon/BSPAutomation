@@ -290,15 +290,46 @@ class SandboxStateStore:
     # -------------------------------------------------------------------------
     async def append_message(self, msg: SandboxMessageRecord) -> Dict[str, Any]:
         payload = msg.model_dump()
-        _IN_MEMORY_MESSAGES.append(payload)
-        if len(_IN_MEMORY_MESSAGES) > 200:
-            del _IN_MEMORY_MESSAGES[:-200]
+        target_id = msg.id
 
+        # 1. In-memory upsert with deduplication
+        existing_idx = next(
+            (i for i, m in enumerate(_IN_MEMORY_MESSAGES) if m.get("id") == target_id),
+            None,
+        )
+        is_update = existing_idx is not None
+        if is_update:
+            _IN_MEMORY_MESSAGES[existing_idx] = payload
+        else:
+            _IN_MEMORY_MESSAGES.append(payload)
+            if len(_IN_MEMORY_MESSAGES) > 200:
+                del _IN_MEMORY_MESSAGES[:-200]
+
+        # 2. Redis upsert with deduplication
         r = await self._get_redis()
         if r:
             try:
-                await r.rpush(self.REDIS_MESSAGES_KEY, json.dumps(payload))
-                await r.ltrim(self.REDIS_MESSAGES_KEY, -200, -1)
+                if is_update:
+                    raw_list = await r.lrange(self.REDIS_MESSAGES_KEY, 0, -1)
+                    parsed = [json.loads(x) for x in raw_list]
+                    updated = False
+                    for i, m in enumerate(parsed):
+                        if m.get("id") == target_id:
+                            parsed[i] = payload
+                            updated = True
+                            break
+                    if updated:
+                        pipe = r.pipeline()
+                        pipe.delete(self.REDIS_MESSAGES_KEY)
+                        for item in parsed[-200:]:
+                            pipe.rpush(self.REDIS_MESSAGES_KEY, json.dumps(item))
+                        await pipe.execute()
+                    else:
+                        await r.rpush(self.REDIS_MESSAGES_KEY, json.dumps(payload))
+                        await r.ltrim(self.REDIS_MESSAGES_KEY, -200, -1)
+                else:
+                    await r.rpush(self.REDIS_MESSAGES_KEY, json.dumps(payload))
+                    await r.ltrim(self.REDIS_MESSAGES_KEY, -200, -1)
             except Exception:
                 pass
 
@@ -317,9 +348,21 @@ class SandboxStateStore:
         else:
             items = list(_IN_MEMORY_MESSAGES)
 
+        # Defensive self-healing deduplication by message ID (preserving latest occurrence)
+        deduped: List[Dict[str, Any]] = []
+        seen_ids: set = set()
+        for item in reversed(items):
+            msg_id = item.get("id")
+            if msg_id:
+                if msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+            deduped.append(item)
+        deduped.reverse()
+
         if phone_number_id:
-            items = [m for m in items if m.get("phone_number_id") == phone_number_id or not m.get("phone_number_id")]
-        return items
+            deduped = [m for m in deduped if m.get("phone_number_id") == phone_number_id or not m.get("phone_number_id")]
+        return deduped
 
     async def append_webhook_log(self, log_entry: Dict[str, Any]) -> Dict[str, Any]:
         _IN_MEMORY_WEBHOOK_LOGS.insert(0, log_entry)

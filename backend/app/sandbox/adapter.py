@@ -1,5 +1,6 @@
 """Local BSP Sandbox WhatsApp Adapter (Isolated inside `app/sandbox/` per ADR-0047)."""
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -81,7 +82,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
         window_state = await store.check_customer_service_window(target_phone_id, to_phone)
         if not window_state["is_open"] and interactive_type != "template":
             blocked_msg = SandboxMessageRecord(
-                id=f"wamid.blocked.{len(self.sent_messages) + 1}",
+                id=f"wamid.blocked.{uuid.uuid4().hex[:8]}",
                 sender="system",
                 to_phone=to_phone,
                 from_phone=target_phone_id,
@@ -143,7 +144,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         rec = {
-            "message_id": f"wamid.mock.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "message": message,
             "status": "DELIVERED",
@@ -164,7 +165,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         rec = {
-            "message_id": f"wamid.mock.interactive.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.interactive.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "body": body_text,
             "buttons": buttons,
@@ -188,7 +189,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         rec = {
-            "message_id": f"wamid.mock.template.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.template.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "template": template_name,
             "language": language_code,
@@ -224,7 +225,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         rec = {
-            "message_id": f"wamid.mock.media.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.media.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "media_type": media_type,
             "media_url": media_url,
@@ -251,7 +252,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
         phone_number_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         rec = {
-            "message_id": f"wamid.mock.list.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.list.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "header": header_text,
             "body": body_text,
@@ -278,7 +279,7 @@ class SandboxWhatsAppBSPAdapter(BaseInMemoryWhatsAppAdapter):
     ) -> Dict[str, Any]:
         cards_dumped = [c.model_dump() for c in carousel.cards]
         rec = {
-            "message_id": f"wamid.mock.carousel.{len(self.sent_messages) + 1}",
+            "message_id": f"wamid.mock.carousel.{uuid.uuid4().hex[:8]}",
             "to": to_phone,
             "body": carousel.body_text,
             "cards": cards_dumped,

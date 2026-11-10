@@ -487,12 +487,14 @@ class SandboxOrchestrationService:
 
     @classmethod
     async def reset_session(cls, phone_number_id: str, customer_phone: str) -> Dict[str, Any]:
+        from app.adapters.registry import WhatsAppProviderRegistry
         from app.contexts.core.services import MerchantIdentificationService
 
         store = get_sandbox_store()
         channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
         merchant_id = channel_ctx.merchant_id if channel_ctx else str(ALABA_AGRO_MERCHANT_ID)
         await store.clear_conversation(merchant_id=merchant_id, customer_phone=customer_phone.lstrip("+"))
+        WhatsAppProviderRegistry.reset_adapters()
         await store.update_fault_profile({
             "force_rate_limit_429": False,
             "force_upstream_500": False,
