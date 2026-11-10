@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from fastapi import HTTPException, Request, status
 
+from app.adapters.providers.base_recorder import generate_mock_wamid
 from app.adapters.whatsapp import get_whatsapp_bsp_adapter
 from app.contexts.knowledge.seed_data import ALABA_AGRO_MERCHANT_ID, DEMO_MERCHANTS
 from app.core.config import settings
@@ -68,7 +69,7 @@ class SandboxPayloadFactory:
         if req.message_type == "status":
             value_obj["statuses"] = [
                 {
-                    "id": req.status_message_id or f"wamid.status.{uuid.uuid4().hex[:8]}",
+                    "id": req.status_message_id or generate_mock_wamid(scope="status"),
                     "status": req.status_value or "read",
                     "timestamp": str(int(time.time())),
                     "recipient_id": req.customer_phone.lstrip("+"),
@@ -245,7 +246,7 @@ class SandboxOrchestrationService:
             )
 
         to_phone = str(body.get("to", "2348031234567"))
-        msg_id = f"wamid.sandbox.{uuid.uuid4().hex[:12]}"
+        msg_id = generate_mock_wamid(scope="sandbox")
         return {
             "messaging_product": "whatsapp",
             "contacts": [{"input": to_phone, "wa_id": to_phone.lstrip("+")}],
@@ -262,7 +263,7 @@ class SandboxOrchestrationService:
         faults = await store.get_fault_profile()
         merchant_id = await cls.ensure_sandbox_tenant(req.phone_number_id)
 
-        msg_id = req.custom_message_id or f"wamid.inbound.{uuid.uuid4().hex[:10]}"
+        msg_id = req.custom_message_id or generate_mock_wamid(scope="inbound")
         payload = SandboxPayloadFactory.build_webhook_payload(req, msg_id)
         raw_bytes = json.dumps(payload).encode("utf-8")
         sig_header = SandboxPayloadFactory.compute_hmac_signature(raw_bytes, corrupt=faults.corrupt_hmac_signature)
@@ -334,7 +335,7 @@ class SandboxOrchestrationService:
             }
             await store.append_webhook_log(wh_log)
             err_bubble = SandboxMessageRecord(
-                id=f"wamid.err.{uuid.uuid4().hex[:8]}",
+                id=generate_mock_wamid(scope="err"),
                 sender="system",
                 to_phone=req.customer_phone,
                 from_phone=req.phone_number_id,
@@ -374,7 +375,7 @@ class SandboxOrchestrationService:
             except Exception as worker_exc:
                 worker_result = {"status": "WORKER_ERROR", "error": str(worker_exc)}
                 err_bubble = SandboxMessageRecord(
-                    id=f"wamid.worker_err.{uuid.uuid4().hex[:8]}",
+                    id=generate_mock_wamid(scope="worker_err"),
                     sender="system",
                     to_phone=req.customer_phone,
                     from_phone=req.phone_number_id,
