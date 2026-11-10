@@ -69,8 +69,22 @@ class VLLMOpenWeightAdapter(StatelessOpenWeightPort):
         text: str,
         expected_slot_hint: Optional[str] = None,
         custom_dictionary: Optional[List[Dict[str, Any]]] = None,
+        active_bound_slots: Optional[Dict[str, Any]] = None,
+        merchant_id: Optional[str] = None,
     ) -> ParsedTurnInput:
         start_time = time.perf_counter()
+        if settings.USE_FAST_PATH:
+            from app.adapters.providers.spacy_nlu_engine import get_spacy_nlu_engine
+            spacy_parsed = get_spacy_nlu_engine().predict_intent_and_slots(
+                text=text,
+                expected_slot_hint=expected_slot_hint,
+                custom_dictionary=custom_dictionary,
+                active_bound_slots=active_bound_slots,
+                merchant_id=merchant_id,
+            )
+            if spacy_parsed.confidence >= 0.85:
+                return spacy_parsed
+
         user_content = f"Expected Slot Hint: {expected_slot_hint or 'NONE'}\nCustomer Message: {text}"
         payload = {
             "model": self.model_id,
@@ -116,6 +130,8 @@ class VLLMOpenWeightAdapter(StatelessOpenWeightPort):
                 text=text,
                 expected_slot_hint=expected_slot_hint,
                 custom_dictionary=custom_dictionary,
+                active_bound_slots=active_bound_slots,
+                merchant_id=merchant_id,
             )
 
     async def translate_output(
@@ -193,11 +209,16 @@ class HuggingFaceLocalOpenWeightAdapter(StatelessOpenWeightPort):
         text: str,
         expected_slot_hint: Optional[str] = None,
         custom_dictionary: Optional[List[Dict[str, Any]]] = None,
+        active_bound_slots: Optional[Dict[str, Any]] = None,
+        merchant_id: Optional[str] = None,
     ) -> ParsedTurnInput:
-        return await self._get_fallback().parse_input(
+        from app.adapters.providers.spacy_nlu_engine import get_spacy_nlu_engine
+        return get_spacy_nlu_engine().predict_intent_and_slots(
             text=text,
             expected_slot_hint=expected_slot_hint,
             custom_dictionary=custom_dictionary,
+            active_bound_slots=active_bound_slots,
+            merchant_id=merchant_id,
         )
 
     async def translate_output(
@@ -215,6 +236,7 @@ def _build_sandbox_adapter() -> StatelessOpenWeightPort:
 # Declarative Registry Map per AGENTS.md (no if/elif chains on provider strings)
 OPEN_WEIGHT_PROVIDER_REGISTRY: Dict[str, Callable[[], StatelessOpenWeightPort]] = {
     "sandbox": _build_sandbox_adapter,
+    "spacy": lambda: HuggingFaceLocalOpenWeightAdapter(),
     "vllm": lambda: VLLMOpenWeightAdapter(),
     "ollama": lambda: VLLMOpenWeightAdapter(),
     "huggingface": lambda: HuggingFaceLocalOpenWeightAdapter(),

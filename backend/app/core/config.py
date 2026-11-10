@@ -58,10 +58,11 @@ class Settings(BaseSettings):
     USE_FAST_PATH: bool = True
     FAST_PATH_CONFIDENCE_THRESHOLD: float = 0.90
 
-    # Stage 2: Custom Local Classifier (HuggingFace / ONNX)
+    # Stage 2: Custom Local Classifier (HuggingFace / ONNX / spaCy)
     USE_CUSTOM_MODEL: bool = True
-    CUSTOM_MODEL_TYPE: Literal["mock", "onnx", "transformers"] = "mock"
+    CUSTOM_MODEL_TYPE: Literal["mock", "onnx", "transformers", "spacy"] = "spacy"
     CUSTOM_MODEL_PATH: str = "models/nigerian_pidgin_intent"
+    SPACY_MODEL_PATH: str = "models/spacy_nigerian_sme"
     CUSTOM_MODEL_CONFIDENCE_THRESHOLD: float = 0.75
 
     # Stage 3: LLM Escalation (Google Gemini 3.7 Flash)
@@ -70,7 +71,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.7-flash"
 
     # Open-Weight Stateless LLM Boundary (Function A: Parser & Function B: Translator)
-    OPEN_WEIGHT_PROVIDER: Literal["sandbox", "vllm", "ollama", "huggingface"] = "sandbox"
+    OPEN_WEIGHT_PROVIDER: Literal["sandbox", "spacy", "vllm", "ollama", "huggingface"] = "sandbox"
     OPEN_WEIGHT_BASE_URL: str = "http://localhost:8001/v1"
     OPEN_WEIGHT_API_KEY: str = "EMPTY"
     OPEN_WEIGHT_MODEL_ID: str = "Qwen/Qwen2.5-3B-Instruct"

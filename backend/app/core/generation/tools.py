@@ -13,6 +13,7 @@ import structlog
 
 from app.adapters.base import PiiSanitizedSlotMap
 from app.contexts.compliance.services import sanitize_nigerian_pii_detailed
+from app.contexts.knowledge.offering_schemas import compute_offering_id
 
 _SLOT_MAP_VALIDATOR = TypeAdapter(PiiSanitizedSlotMap)
 
@@ -194,16 +195,16 @@ ZONE_DELIVERY_FEES_KOBO = {
 def parse_catalog_manifest(manifest_str: Optional[str]) -> List[Dict[str, Any]]:
     """Safely parses structured catalog manifest, falling back to default manifest."""
     if not manifest_str:
-        return DEFAULT_COMMODITY_CATALOG
+        return [dict(item) for item in DEFAULT_COMMODITY_CATALOG]
     try:
         data = json.loads(manifest_str)
         if isinstance(data, list):
-            return data
+            return [dict(item) for item in data]
         if isinstance(data, dict) and "products" in data:
-            return data["products"]
+            return [dict(item) for item in data["products"]]
     except Exception:
         pass
-    return DEFAULT_COMMODITY_CATALOG
+    return [dict(item) for item in DEFAULT_COMMODITY_CATALOG]
 
 
 class CheckoutOrderTool(LocalTool):
@@ -234,31 +235,62 @@ class CheckoutOrderTool(LocalTool):
         sanitized_slots = _SLOT_MAP_VALIDATOR.validate_python(slots)
 
         catalog = parse_catalog_manifest(catalog_manifest)
+        merchant_id = kwargs.get("merchant_id") or sanitized_slots.get("merchant_id")
+        for c_item in catalog:
+            if "offering_id" not in c_item and "sku" in c_item:
+                c_item["offering_id"] = compute_offering_id(merchant_id, c_item["sku"])
+
         bound: Dict[str, Any] = dict(sanitized_slots)
         missing: List[str] = []
 
         # ---------------------------------------------------------------------
-        # STEP 1: Resolve SKU & Disambiguate Products
+        # MULTI-ITEM BULK CART BRANCH (line_items > 1)
         # ---------------------------------------------------------------------
-        raw_sku = bound.get("sku")
+        raw_line_items = bound.get("line_items")
+        if isinstance(raw_line_items, list) and len(raw_line_items) > 1:
+            return await self._evaluate_multi_item_cart(
+                bound=bound,
+                line_items=raw_line_items,
+                catalog=catalog,
+                merchant_id=merchant_id,
+                stock_checker=stock_checker,
+            )
+
+        # ---------------------------------------------------------------------
+        # STEP 1: Resolve Offering ID / SKU & Disambiguate Products
+        # ---------------------------------------------------------------------
+        raw_sku = bound.get("sku") or bound.get("offering_id")
         product_query = (bound.get("product") or "").lower().strip()
         matched_sku_item: Optional[Dict[str, Any]] = None
 
         if raw_sku:
             # Check if attributes are already bound
-            if bound.get("product_name") and bound.get("unit_price_kobo"):
+            if bound.get("product_name") and bound.get("unit_price_kobo") and bound.get("sku"):
                 matched_sku_item = {
-                    "sku": str(raw_sku),
+                    "offering_id": bound.get("offering_id") or compute_offering_id(merchant_id, str(bound["sku"])),
+                    "sku": str(bound["sku"]),
                     "name": bound["product_name"],
                     "price_kobo": bound["unit_price_kobo"],
                     "in_stock": bound.get("in_stock", True),
                 }
+                bound["offering_id"] = matched_sku_item["offering_id"]
             else:
-                # Explicit SKU provided (e.g. from button ID SET_SLOT:sku:...)
-                matched = [item for item in catalog if item["sku"].upper() == str(raw_sku).upper()]
+                # Explicit SKU or offering_id provided (e.g. from button ID SET_SLOT:sku:...)
+                raw_sku_str = str(raw_sku).strip()
+                matched = [
+                    item for item in catalog
+                    if item["sku"].upper() == raw_sku_str.upper()
+                    or str(item.get("offering_id", "")).lower() == raw_sku_str.lower()
+                    or compute_offering_id(None, item["sku"]).lower() == raw_sku_str.lower()
+                ]
                 if matched:
                     matched_sku_item = matched[0]
                     bound["sku"] = matched_sku_item["sku"]
+                    bound["offering_id"] = (
+                        bound.get("offering_id")
+                        or matched_sku_item.get("offering_id")
+                        or compute_offering_id(merchant_id, matched_sku_item["sku"])
+                    )
                     bound["product_name"] = matched_sku_item["name"]
                     bound["unit_price_kobo"] = matched_sku_item["price_kobo"]
                     bound["in_stock"] = matched_sku_item.get("in_stock", True)
@@ -275,6 +307,7 @@ class CheckoutOrderTool(LocalTool):
             if len(candidates) == 1:
                 matched_sku_item = candidates[0]
                 bound["sku"] = matched_sku_item["sku"]
+                bound["offering_id"] = matched_sku_item.get("offering_id") or compute_offering_id(merchant_id, matched_sku_item["sku"])
                 bound["product_name"] = matched_sku_item["name"]
                 bound["unit_price_kobo"] = matched_sku_item["price_kobo"]
             elif len(candidates) > 1:
@@ -477,10 +510,235 @@ class CheckoutOrderTool(LocalTool):
         total_payable_kobo = subtotal_kobo + delivery_fee_kobo
 
         breakdown = {
+            "offering_id": bound.get("offering_id"),
             "sku": bound["sku"],
             "product_name": bound["product_name"],
             "quantity": parsed_qty,
             "unit_price_kobo": unit_price_kobo,
+            "subtotal_kobo": subtotal_kobo,
+            "fulfillment_type": bound["fulfillment_type"],
+            "delivery_zone": bound.get("delivery_zone", "Self-Pickup"),
+            "delivery_fee_kobo": delivery_fee_kobo,
+            "total_payable_kobo": total_payable_kobo,
+        }
+
+        return ToolEvaluationResult(
+            status=ToolStatus.CONVERGED,
+            tool_name=self.contract.tool_name,
+            bound_slots=bound,
+            missing_slots=[],
+            calculated_total_kobo=total_payable_kobo,
+            breakdown=breakdown,
+            action="GENERATE_VIRTUAL_NUBAN_HOLD",
+        )
+
+    async def _evaluate_multi_item_cart(
+        self,
+        bound: Dict[str, Any],
+        line_items: List[Dict[str, Any]],
+        catalog: List[Dict[str, Any]],
+        merchant_id: Optional[str],
+        stock_checker: Optional[Any],
+    ) -> ToolEvaluationResult:
+        """Resolves multi-item cart (`line_items`), disambiguates any ambiguous SKU, and sums Kobo subtotals."""
+        resolved_items: List[Dict[str, Any]] = []
+
+        for idx, raw_item in enumerate(line_items):
+            item = dict(raw_item)
+            raw_sku = item.get("sku") or item.get("offering_id")
+            prod_query = (item.get("product") or "").lower().strip()
+            matched_cat: Optional[Dict[str, Any]] = None
+
+            if raw_sku:
+                raw_sku_str = str(raw_sku).strip()
+                matches = [
+                    c for c in catalog
+                    if c["sku"].upper() == raw_sku_str.upper()
+                    or str(c.get("offering_id", "")).lower() == raw_sku_str.lower()
+                    or compute_offering_id(None, c["sku"]).lower() == raw_sku_str.lower()
+                ]
+                if matches:
+                    matched_cat = matches[0]
+
+            if not matched_cat and prod_query:
+                candidates = [
+                    c for c in catalog
+                    if prod_query in c["category"].lower()
+                    or prod_query in c["name"].lower()
+                    or any(term in c["name"].lower() for term in prod_query.split())
+                ]
+                if len(candidates) == 1:
+                    matched_cat = candidates[0]
+                elif len(candidates) > 1:
+                    buttons = []
+                    for c in candidates[:3]:
+                        price_fmt = f"₦{c['price_naira']:,}" if "price_naira" in c else f"₦{c['price_kobo']//100:,}"
+                        title = f"{c['name']} ({price_fmt})"
+                        if len(title) > 20:
+                            title = f"{c['name'].split()[0]} {c.get('weight', '')} ({price_fmt})"[:20]
+                        buttons.append({
+                            "id": f"SET_SLOT:line_item_sku:{idx}:{c['sku']}",
+                            "title": title,
+                        })
+                    candidate_names = " or ".join(
+                        [f"*{c['name']}* (₦{c.get('price_naira', c['price_kobo']//100):,})" for c in candidates[:3]]
+                    )
+                    prompt_text = (
+                        f"For item #{idx + 1} (*{prod_query}*), we have multiple options in stock:\n"
+                        f"{candidate_names}.\n\n"
+                        f"Which brand or size would you like to include in your cart?"
+                    )
+                    bound["line_items"] = line_items
+                    return ToolEvaluationResult(
+                        status=ToolStatus.NEEDS_CLARIFICATION,
+                        tool_name=self.contract.tool_name,
+                        clarification=ToolClarificationPrompt(
+                            prompt_text=prompt_text,
+                            buttons=buttons,
+                            missing_param=f"line_item_sku:{idx}",
+                            candidate_options=candidates,
+                        ),
+                        bound_slots=bound,
+                        missing_slots=[f"line_item_sku:{idx}"],
+                    )
+                else:
+                    return ToolEvaluationResult(
+                        status=ToolStatus.REJECTED,
+                        tool_name=self.contract.tool_name,
+                        clarification=ToolClarificationPrompt(
+                            prompt_text=f"Sorry, we couldn't find *{prod_query}* in our verified wholesale catalog today.",
+                            buttons=[{"id": "INTENT:SHOW_CATALOG", "title": "View Catalog"}],
+                            missing_param=f"line_item_sku:{idx}",
+                        ),
+                        bound_slots=bound,
+                        missing_slots=[f"line_item_sku:{idx}"],
+                    )
+
+            if not matched_cat:
+                return ToolEvaluationResult(
+                    status=ToolStatus.NEEDS_CLARIFICATION,
+                    tool_name=self.contract.tool_name,
+                    clarification=ToolClarificationPrompt(
+                        prompt_text=f"Which specific product would you like for item #{idx + 1}?",
+                        missing_param=f"line_item_sku:{idx}",
+                    ),
+                    bound_slots=bound,
+                    missing_slots=[f"line_item_sku:{idx}"],
+                )
+
+            qty_val = int(item.get("quantity") or 1)
+            if stock_checker and callable(stock_checker):
+                has_stock = await stock_checker(matched_cat["sku"], qty_val)
+                if not has_stock:
+                    return ToolEvaluationResult(
+                        status=ToolStatus.OUT_OF_STOCK,
+                        tool_name=self.contract.tool_name,
+                        clarification=ToolClarificationPrompt(
+                            prompt_text=f"Ouch! *{matched_cat['name']}* is currently out of stock.",
+                            buttons=[{"id": "INTENT:SHOW_CATALOG", "title": "See Alternatives"}],
+                            missing_param=f"line_item_sku:{idx}",
+                        ),
+                        bound_slots=bound,
+                        missing_slots=[f"line_item_sku:{idx}"],
+                    )
+            elif matched_cat.get("in_stock") is False:
+                return ToolEvaluationResult(
+                    status=ToolStatus.OUT_OF_STOCK,
+                    tool_name=self.contract.tool_name,
+                    clarification=ToolClarificationPrompt(
+                        prompt_text=f"Apologies, *{matched_cat['name']}* is currently out of stock.",
+                        buttons=[{"id": "INTENT:SHOW_CATALOG", "title": "See Alternatives"}],
+                        missing_param=f"line_item_sku:{idx}",
+                    ),
+                    bound_slots=bound,
+                    missing_slots=[f"line_item_sku:{idx}"],
+                )
+
+            unit_kobo = int(matched_cat["price_kobo"])
+            offering_id = matched_cat.get("offering_id") or compute_offering_id(merchant_id, matched_cat["sku"])
+            resolved_items.append({
+                "offering_id": offering_id,
+                "sku": matched_cat["sku"],
+                "product": matched_cat.get("category", item.get("product")),
+                "product_name": matched_cat["name"],
+                "quantity": qty_val,
+                "unit_price_kobo": unit_kobo,
+                "subtotal_kobo": unit_kobo * qty_val,
+                "in_stock": True,
+            })
+
+        bound["line_items"] = resolved_items
+        bound["offering_id"] = resolved_items[0]["offering_id"]
+        bound["sku"] = resolved_items[0]["sku"]
+        bound["product_name"] = " + ".join(f"{it['quantity']}x {it['product_name']}" for it in resolved_items)
+        bound["quantity"] = sum(it["quantity"] for it in resolved_items)
+
+        cart_summary = bound["product_name"]
+
+        # Resolve Fulfillment Type
+        fulfillment = bound.get("fulfillment_type")
+        if fulfillment:
+            f_upper = str(fulfillment).upper()
+            if "PICKUP" in f_upper or "COLLECT" in f_upper or "WAREHOUSE" in f_upper:
+                bound["fulfillment_type"] = "WAREHOUSE_PICKUP"
+            else:
+                bound["fulfillment_type"] = "EXPRESS_DELIVERY"
+        else:
+            if bound.get("location") or bound.get("delivery_zone"):
+                bound["fulfillment_type"] = "EXPRESS_DELIVERY"
+            else:
+                return ToolEvaluationResult(
+                    status=ToolStatus.NEEDS_CLARIFICATION,
+                    tool_name=self.contract.tool_name,
+                    clarification=ToolClarificationPrompt(
+                        prompt_text=f"For your bulk order (*{cart_summary}*), how would you like to receive it?",
+                        buttons=[
+                            {"id": "SET_SLOT:fulfillment_type:EXPRESS_DELIVERY", "title": "Express Delivery"},
+                            {"id": "SET_SLOT:fulfillment_type:WAREHOUSE_PICKUP", "title": "Warehouse Pickup"},
+                        ],
+                        missing_param="fulfillment_type",
+                    ),
+                    bound_slots=bound,
+                    missing_slots=["fulfillment_type"],
+                )
+
+        delivery_fee_kobo = 0
+        if bound["fulfillment_type"] == "EXPRESS_DELIVERY":
+            raw_zone = (bound.get("delivery_zone") or bound.get("location") or "").lower().strip()
+            resolved_zone: Optional[str] = None
+            for zone_key, fee in ZONE_DELIVERY_FEES_KOBO.items():
+                if zone_key in raw_zone:
+                    resolved_zone = zone_key
+                    delivery_fee_kobo = fee
+                    break
+            if not resolved_zone:
+                return ToolEvaluationResult(
+                    status=ToolStatus.NEEDS_CLARIFICATION,
+                    tool_name=self.contract.tool_name,
+                    clarification=ToolClarificationPrompt(
+                        prompt_text=f"Almost done! Where should we deliver your bulk order (*{cart_summary}*)?",
+                        buttons=[
+                            {"id": "SET_SLOT:delivery_zone:Ikeja", "title": "Ikeja / Mainland"},
+                            {"id": "SET_SLOT:delivery_zone:Lekki", "title": "Lekki / Island"},
+                            {"id": "SET_SLOT:delivery_zone:Abuja", "title": "Abuja FCT"},
+                        ],
+                        missing_param="delivery_zone",
+                    ),
+                    bound_slots=bound,
+                    missing_slots=["delivery_zone"],
+                )
+            bound["delivery_zone"] = resolved_zone.capitalize()
+            bound["delivery_fee_kobo"] = delivery_fee_kobo
+
+        subtotal_kobo = sum(it["subtotal_kobo"] for it in resolved_items)
+        total_payable_kobo = subtotal_kobo + delivery_fee_kobo
+
+        breakdown = {
+            "line_items": resolved_items,
+            "offering_id": bound["offering_id"],
+            "sku": bound["sku"],
+            "product_name": cart_summary,
+            "quantity": bound["quantity"],
             "subtotal_kobo": subtotal_kobo,
             "fulfillment_type": bound["fulfillment_type"],
             "delivery_zone": bound.get("delivery_zone", "Self-Pickup"),

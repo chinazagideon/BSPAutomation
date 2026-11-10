@@ -145,17 +145,31 @@ class ConversationFSMService:
                         node_type="TRANSACTIONAL",
                         bound_slots=(
                             dict(active_frame.bound_slots)
-                            if active_frame and slot_name != "sku"
+                            if active_frame and slot_name not in ("sku", "offering_id")
                             else {}
                         ),
                         missing_slots=[],
                     )
-                elif slot_name == "sku" and active_frame.bound_slots.get("sku") != slot_val:
+                elif slot_name in ("sku", "offering_id") and active_frame.bound_slots.get("sku") != slot_val:
                     active_frame.bound_slots = {}
 
-                active_frame.bound_slots[slot_name] = slot_val
+                if slot_name.startswith("line_item_sku:"):
+                    try:
+                        item_idx = int(slot_name.split(":", 1)[1])
+                        line_items = list(active_frame.bound_slots.get("line_items") or [])
+                        if 0 <= item_idx < len(line_items):
+                            from app.contexts.knowledge.offering_schemas import compute_offering_id
+                            updated_item = dict(line_items[item_idx])
+                            updated_item["sku"] = slot_val
+                            updated_item["offering_id"] = compute_offering_id(m_id, slot_val)
+                            line_items[item_idx] = updated_item
+                            active_frame.bound_slots["line_items"] = line_items
+                    except (ValueError, IndexError):
+                        active_frame.bound_slots[slot_name] = slot_val
+                else:
+                    active_frame.bound_slots[slot_name] = slot_val
 
-                if slot_name == "sku":
+                if slot_name in ("sku", "offering_id"):
                     out_of_stock_env = await cls._bind_and_validate_sku(
                         merchant_id=merchant_id,
                         customer_phone=customer_phone,
@@ -313,6 +327,8 @@ class ConversationFSMService:
             text=sanitized_text,
             expected_slot_hint=expected_slot_hint,
             custom_dictionary=custom_dictionary,
+            active_bound_slots=active_frame.bound_slots if active_frame else None,
+            merchant_id=m_id,
         )
 
         # ---------------------------------------------------------------------
@@ -860,7 +876,9 @@ class ConversationFSMService:
             return True
         bound = active_frame.bound_slots
         slots = parsed.slots
-        # Check if customer supplied a different product/SKU than the one already bound
+        # Check if customer supplied a different product/SKU/offering_id than the one already bound
+        if bound.get("offering_id") and slots.get("offering_id") and str(bound["offering_id"]).lower() != str(slots["offering_id"]).lower():
+            return True
         if bound.get("product") and slots.get("product") and bound["product"].lower() != str(slots["product"]).lower():
             return True
         if bound.get("sku") and slots.get("sku") and bound["sku"].upper() != str(slots["sku"]).upper():
@@ -880,7 +898,7 @@ class ConversationFSMService:
             "PRICE_INQUIRY",
         ):
             return False
-        relevant_keys = {"sku", "product", "product_name", "quantity", "location", "delivery_zone", "fulfillment_type"}
+        relevant_keys = {"offering_id", "sku", "product", "product_name", "quantity", "location", "delivery_zone", "fulfillment_type", "line_items"}
         return bool(relevant_keys.intersection(parsed.slots.keys()))
 
     @staticmethod
@@ -891,13 +909,19 @@ class ConversationFSMService:
     ) -> None:
         merged_updates = {**parsed.slots, **parsed.slot_mutations}
         if is_mutation:
-            # If product or SKU changed, invalidate stale bound SKU & pricing
+            # If product, SKU, or offering_id changed, invalidate stale bound SKU & pricing
             new_prod = (merged_updates.get("product") or "").lower()
             old_prod = (active_frame.bound_slots.get("product") or "").lower()
             new_sku = (merged_updates.get("sku") or "").upper()
             old_sku = (active_frame.bound_slots.get("sku") or "").upper()
-            if (new_prod and new_prod != old_prod) or (new_sku and new_sku != old_sku):
-                for stale_key in ("sku", "product_name", "unit_price_kobo", "in_stock"):
+            new_off = (merged_updates.get("offering_id") or "").lower()
+            old_off = (active_frame.bound_slots.get("offering_id") or "").lower()
+            if (
+                (new_prod and new_prod != old_prod)
+                or (new_sku and new_sku != old_sku)
+                or (new_off and new_off != old_off)
+            ):
+                for stale_key in ("offering_id", "sku", "product_name", "unit_price_kobo", "in_stock", "line_items"):
                     active_frame.bound_slots.pop(stale_key, None)
 
         for k, v in merged_updates.items():
@@ -942,15 +966,22 @@ class ConversationFSMService:
                     ],
                     strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
                 )
+            active_frame.bound_slots["offering_id"] = offering.offering_id
             active_frame.bound_slots["sku"] = offering.sku
             active_frame.bound_slots["product_name"] = offering.title
             active_frame.bound_slots["unit_price_kobo"] = offering.price_kobo
             active_frame.bound_slots["in_stock"] = True
             return None
 
+        from app.contexts.knowledge.offering_schemas import compute_offering_id
         from app.core.generation.tools import DEFAULT_COMMODITY_CATALOG, parse_catalog_manifest
         catalog_to_check = parse_catalog_manifest(catalog_manifest) if catalog_manifest else DEFAULT_COMMODITY_CATALOG
-        matched = [item for item in catalog_to_check if item.get("sku", "").upper() == str(sku_val).upper()]
+        matched = [
+            item for item in catalog_to_check
+            if item.get("sku", "").upper() == str(sku_val).upper()
+            or compute_offering_id(m_id, item.get("sku", "")).lower() == str(sku_val).lower()
+            or compute_offering_id(None, item.get("sku", "")).lower() == str(sku_val).lower()
+        ]
         if matched:
             matched_item = matched[0]
             if matched_item.get("in_stock") is False:
@@ -969,6 +1000,7 @@ class ConversationFSMService:
                     ],
                     strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
                 )
+            active_frame.bound_slots["offering_id"] = compute_offering_id(m_id, matched_item["sku"])
             active_frame.bound_slots["sku"] = matched_item["sku"]
             active_frame.bound_slots["product_name"] = matched_item["name"]
             active_frame.bound_slots["unit_price_kobo"] = matched_item["price_kobo"]
@@ -1008,6 +1040,9 @@ class ConversationFSMService:
             )
 
         if tool_res.status == ToolStatus.CONVERGED:
+            if tool_res.bound_slots:
+                active_frame.bound_slots.update(tool_res.bound_slots)
+            active_frame.bound_slots["calculated_total_kobo"] = tool_res.calculated_total_kobo or 0
             stack.pop()
             await NegotiationFrameManager.save_stack(merchant_id, customer_phone, stack)
             total_kobo = tool_res.calculated_total_kobo or 0
@@ -1017,8 +1052,13 @@ class ConversationFSMService:
                 if tool_res.bound_slots.get("fulfillment_type") == "EXPRESS_DELIVERY"
                 else " for warehouse self-pickup"
             )
+            line_items = tool_res.bound_slots.get("line_items")
+            if isinstance(line_items, list) and len(line_items) > 1:
+                order_summary = tool_res.bound_slots.get("product_name", "bulk items")
+            else:
+                order_summary = f"{tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}"
             reply = (
-                f"Sharp! We don reserve your order ({tool_res.bound_slots.get('quantity', 1)}x {tool_res.bound_slots.get('product_name', 'item')}){loc_str}.\n"
+                f"Sharp! We don reserve your order ({order_summary}){loc_str}.\n"
                 f"Total Amount: *{total_naira}* (10-minute anti-ghosting hold).\n\n"
                 f"🏦 *Payment Details (Dedicated Virtual NUBAN):*\n"
                 f"Bank: *Moniepoint MFB*\n"

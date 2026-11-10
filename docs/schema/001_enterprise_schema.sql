@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS ledger.cart_items (
   id UUID PRIMARY KEY DEFAULT core.generate_uuid_v7(),
   merchant_id UUID NOT NULL REFERENCES core.merchants(id) ON DELETE CASCADE,
   cart_id UUID NOT NULL REFERENCES ledger.checkout_carts(id) ON DELETE CASCADE,
+  offering_id UUID,
   item_name VARCHAR(256) NOT NULL,
   sku VARCHAR(64),
   quantity INTEGER NOT NULL CHECK (quantity > 0),

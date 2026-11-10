@@ -108,9 +108,13 @@ class CatalogSeeder:
 
         seeded_entries: List[KnowledgeEntry] = []
 
+        from app.contexts.knowledge.offering_schemas import compute_offering_id
+
         for item in items:
             sku = item["sku"]
+            offering_uuid_str = compute_offering_id(merchant_id, sku)
             metadata = {
+                "offering_id": offering_uuid_str,
                 "sku": sku,
                 "category": item["category"],
                 "search_keywords": item.get("search_keywords", []),
@@ -144,6 +148,7 @@ class CatalogSeeder:
                 seeded_entries.append(existing)
             else:
                 entry = KnowledgeEntry(
+                    id=UUID(offering_uuid_str),
                     merchant_id=merchant_id,
                     entry_type="CATALOG",
                     title=item["title"],

@@ -175,6 +175,17 @@ class ClassificationOutput(BaseModel):
 # -----------------------------------------------------------------------------
 # STATELESS OPEN-WEIGHT MODEL LAYER CONTRACTS (FUNCTION A & FUNCTION B)
 # -----------------------------------------------------------------------------
+class CartLineItem(BaseModel):
+    """Canonical multi-item cart line entry keyed by unique offering_id and merchant SKU."""
+    offering_id: Optional[str] = None
+    sku: Optional[str] = None
+    product: Optional[PiiSanitizedStr] = None
+    product_name: Optional[PiiSanitizedStr] = None
+    quantity: int = Field(1, ge=1)
+    unit_price_kobo: Optional[int] = None
+    in_stock: bool = True
+
+
 class ParsedTurnInput(BaseModel):
     """Strict JSON output contract for Function A (Stateless Input Parser)."""
     intent: CoercedCanonicalIntent = Field(
@@ -268,6 +279,7 @@ class HydrationTranslationOutput(BaseModel):
 class ProductTapAction(BaseModel):
     action_kind: Literal["PRODUCT_TAP"] = "PRODUCT_TAP"
     sku: str
+    offering_id: Optional[str] = None
 
 
 class SlotBindAction(BaseModel):
@@ -299,15 +311,24 @@ class InteractiveProtocolEnvelope(BaseModel):
             return data
         raw = data.strip() if isinstance(data, str) else str((data or {}).get("raw_id", "")).strip()
         if raw.startswith("PRODUCT:"):
-            return {"event": {"action_kind": "PRODUCT_TAP", "sku": raw.split(":", 1)[1].strip()}}
+            target = raw.split(":", 1)[1].strip()
+            return {"event": {"action_kind": "PRODUCT_TAP", "sku": target, "offering_id": target}}
         if raw.startswith("SET_SLOT:"):
             parts = raw.split(":", 2)
             if len(parts) == 3:
+                slot_key = parts[1].strip()
+                slot_val = parts[2].strip()
+                if slot_key.startswith("line_item_sku:") and ":" in slot_val:
+                    pass
+                elif slot_key == "line_item_sku" and ":" in slot_val:
+                    idx_part, actual_val = slot_val.split(":", 1)
+                    slot_key = f"line_item_sku:{idx_part.strip()}"
+                    slot_val = actual_val.strip()
                 return {
                     "event": {
                         "action_kind": "SLOT_BIND",
-                        "slot_name": parts[1].strip(),
-                        "slot_value": parts[2].strip(),
+                        "slot_name": slot_key,
+                        "slot_value": slot_val,
                     }
                 }
         if raw in ("SHOW_CATALOG", "BROWSE_CATALOG", "INTENT:SHOW_CATALOG"):
@@ -529,6 +550,8 @@ class StatelessOpenWeightPort(ABC):
         text: str,
         expected_slot_hint: Optional[str] = None,
         custom_dictionary: Optional[List[Dict[str, Any]]] = None,
+        active_bound_slots: Optional[Dict[str, Any]] = None,
+        merchant_id: Optional[str] = None,
     ) -> ParsedTurnInput:
         """Function A: Maps incoming natural language into strict JSON intent and parameter slots."""
         pass

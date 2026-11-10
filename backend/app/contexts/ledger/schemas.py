@@ -9,6 +9,7 @@ from app.core.response import CamelModel
 
 
 class CartItemInput(CamelModel):
+    offering_id: Optional[UUID] = None
     item_sku: str
     item_title: str
     unit_price_kobo: int = Field(..., gt=0)

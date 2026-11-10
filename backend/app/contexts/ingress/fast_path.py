@@ -1,92 +1,128 @@
-"""Stage 1: Deterministic Trigram & Regex Fast-Path Intent Router for Nigerian SME Dialogues."""
+"""Stage 1: Native spaCy & Deterministic Fast-Path Intent Router for Nigerian SME Dialogues."""
 
-import re
 import time
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 import structlog
+
 from app.adapters.base import ClassificationOutput
+from app.adapters.providers.spacy_nlu_engine import (
+    STAGE_1_FAST_PATH_INTENTS,
+    get_spacy_nlu_engine,
+)
 
 logger = structlog.get_logger(__name__)
 
+# Stage 1 deterministic action and reply templates mapped by canonical intent
+_STAGE_1_INTENT_METADATA: Dict[str, Dict[str, Any]] = {
+    "CONFIRM_PAYMENT": {
+        "rule_source": "confirm_payment",
+        "lead_tier": "HOT",
+        "urgency_score": 10,
+        "confidence": 0.98,
+        "action": "TRIGGER_LEDGER_RECONCILIATION",
+        "suggested_reply": (
+            "Bless up! 🙌 Your payment confirmation has been received. "
+            "Our automated anti-ghosting ledger is matching your transfer ref with Moniepoint. "
+            "Confirmation incoming sharp sharp!"
+        ),
+    },
+    "CANCEL_ORDER": {
+        "rule_source": "cancel_order",
+        "lead_tier": "COLD",
+        "urgency_score": 5,
+        "confidence": 0.98,
+        "action": "CANCEL_NEGOTIATION_FRAME",
+        "suggested_reply": (
+            "No wahala! We don clear your pending order. "
+            "Let us know anytime you're ready to order again."
+        ),
+    },
+    "PRICE_INQUIRY": {
+        "rule_source": "price_or_stock_inquiry",
+        "lead_tier": "HOT",
+        "urgency_score": 8,
+        "confidence": 0.96,
+        "action": "SHOW_PRODUCT_CATALOG",
+        "suggested_reply": None,
+    },
+    "INSTANT_CHECKOUT_ORDER": {
+        "rule_source": "instant_checkout_order",
+        "lead_tier": "HOT",
+        "urgency_score": 9,
+        "confidence": 0.95,
+        "action": "DISPATCH_LOCAL_TOOL",
+        "suggested_reply": None,
+    },
+    "RESERVE_APPOINTMENT": {
+        "rule_source": "reserve_appointment",
+        "lead_tier": "HOT",
+        "urgency_score": 9,
+        "confidence": 0.94,
+        "action": "ATOMIC_SLOT_HOLD",
+        "suggested_reply": (
+            "Got you covered! 🗓️ We have atomic slot locking with GiST anti-double-booking protection. "
+            "A 10-minute provisional hold is now active. Please confirm your ₦5,000 commitment deposit to lock your calendar slot."
+        ),
+    },
+    "HUMAN_AGENT_HANDOFF": {
+        "rule_source": "human_agent_handoff",
+        "lead_tier": "WARM",
+        "urgency_score": 8,
+        "confidence": 0.96,
+        "action": "DISPATCH_AGENT_HANDOFF",
+        "suggested_reply": (
+            "No wahala! I am transferring you directly to our live desk agent. "
+            "Our system is injecting your full context so the agent won't ask you repeated questions. 👨‍💼"
+        ),
+    },
+    "GREETING_ENGAGEMENT": {
+        "rule_source": "greeting_engagement",
+        "lead_tier": "WARM",
+        "urgency_score": 5,
+        "confidence": 0.91,
+        "action": "SHOW_MAIN_MENU",
+        "suggested_reply": (
+            "How far! Welcome to Enterprise WhatsApp Hub. 🙌 We provide automated checkouts, "
+            "atomic reservations, and real-time bank transfer anti-ghosting delivery across Nigeria.\n\n"
+            "How we fit help your business today?"
+        ),
+    },
+}
 
-def extract_commercial_entities(text: str) -> Dict[str, Any]:
-    """Extracts Nigerian location, commercial quantities, and Naira budget entities."""
-    lower = text.lower()
-    entities: Dict[str, Any] = {}
 
-    # 1. Location Entity Extraction
-    if re.search(r"\b(ikeja|computer\s*village|allen|ogba|maryland)\b", lower):
-        entities["location"] = "Ikeja / Mainland, Lagos"
-    elif re.search(r"\b(lekki|vi|victoria\s*island|ikoyi|ajah|chevron)\b", lower):
-        entities["location"] = "Lekki / Island, Lagos"
-    elif re.search(r"\b(yaba|surulere|ebute\s*metta|unilag)\b", lower):
-        entities["location"] = "Yaba / Central, Lagos"
-    elif re.search(r"\b(abuja|garki|wuse|maitama|gwarinpa)\b", lower):
-        entities["location"] = "Abuja FCT"
-    elif re.search(r"\b(ibadan|bodija|dugbe|ring\s*road)\b", lower):
-        entities["location"] = "Ibadan, Oyo"
-
-    # 2. Quantity Entity Extraction
-    qty_match = re.search(r"(\d+)\s*(cartons?|bags?|units?|pieces?|packs?|crates?|doz)", lower)
-    if qty_match:
-        entities["quantity"] = f"{qty_match.group(1)} {qty_match.group(2)}"
-
-    # 3. Budget / Currency Extraction (Kobo)
-    budget_match = re.search(r"(?:₦|ngn|naira|\b)?\s*(\d{1,3}(?:,\d{3})*|\d+)\s*(k|thousand|m|million)?\b", lower)
-    if budget_match:
-        val_str = budget_match.group(1).replace(",", "")
-        multiplier_str = budget_match.group(2)
-        try:
-            num = float(val_str)
-            if multiplier_str in ["k", "thousand"]:
-                num *= 1000
-            elif multiplier_str in ["m", "million"]:
-                num *= 1000000
-            if num >= 500:
-                entities["budget_naira"] = num
-                entities["budget_kobo"] = int(num * 100)
-        except ValueError:
-            pass
-
-    # 4. Product / Commodity Extraction
-    product_patterns = [
-        r"\b(?:bags?|cartons?|packs?|crates?|doz(?:en)?)\s+(?:of\s+)?([a-zA-Z\s]{3,30}?)(?:\s+(?:for|to|deliver|drop)|$)",
-        r"\b(?:want|need|order|buy)\s+(?:\d+\s+)?(?:bags?|cartons?|packs?|units?|pieces?|crates?)?\s*(?:of\s+)?([a-zA-Z\s]{3,30}?)(?:\s+(?:for|to|deliver|drop)|$)",
-        r"\b(sugar|rice|flour|beans|oil|spaghetti|noodles|indomie|cement|milk|garri|salt)\b",
-    ]
-    for pat in product_patterns:
-        m = re.search(pat, lower)
-        if m:
-            candidate_p = m.group(1).strip()
-            if candidate_p not in ["to", "for", "am", "dey", "now", "today", "please", "abeg"]:
-                entities["product"] = candidate_p
-                break
-
-    # 5. Fulfillment Type Extraction
-    if re.search(r"\b(pickup|pick\s*up|collect|warehouse|come\s*carry)\b", lower):
-        entities["fulfillment_type"] = "WAREHOUSE_PICKUP"
-    elif re.search(r"\b(deliver|dispatch|waybill|drop\s*am|send\s*am\s*to)\b", lower):
-        entities["fulfillment_type"] = "EXPRESS_DELIVERY"
-
+def extract_commercial_entities(
+    text: str,
+    merchant_id: Optional[str] = None,
+    active_bound_slots: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Extracts Nigerian location, commercial quantities, Naira budgets, canonical offering_id/SKU, and multi-item line_items via SpacyNLUEngine."""
+    engine = get_spacy_nlu_engine()
+    entities, _, _ = engine.extract_entities(
+        text,
+        merchant_id=merchant_id,
+        active_bound_slots=active_bound_slots,
+    )
     return entities
 
 
 def fast_path_classify(
     text: str,
     custom_dictionary: Optional[list] = None,
+    merchant_id: Optional[str] = None,
 ) -> Optional[ClassificationOutput]:
     """
-    Stage 1 Classifier: Matches deterministic commercial phrases with sub-millisecond execution.
-    Checks merchant custom dictionary first, then falls back to static Nigerian slang regexes.
-    Returns ClassificationOutput if confidence >= threshold, or None.
+    Stage 1 Classifier: Executes merchant custom dictionary priority matching followed by
+    natively trained spaCy intent & entity extraction (~1-2ms CPU).
+    Returns ClassificationOutput if intent is a Stage 1 intent with confidence >= 0.90, else None.
     """
     start_time = time.perf_counter()
-    lower = text.lower().strip()
-    entities = extract_commercial_entities(text)
-    dialect = "Nigerian Pidgin" if re.search(r"\b(don|dey|wetin|abeg|oya|fit|sef)\b", lower) else "Commercial Slang"
+    lower = (text or "").lower().strip()
+    engine = get_spacy_nlu_engine()
+    dialect = engine.detect_dialect(text)
 
     # 0. Merchant-Specific Custom Fast-Path Dictionary
     if custom_dictionary:
+        entities = extract_commercial_entities(text, merchant_id=merchant_id)
         for rule in custom_dictionary:
             phrase = (rule.get("phrase_pattern") or "").lower().strip()
             if phrase and phrase in lower:
@@ -97,7 +133,10 @@ def fast_path_classify(
                     urgency_score=rule.get("urgency_score", 7),
                     confidence=0.98,
                     detected_dialect=dialect,
-                    suggested_reply=rule.get("suggested_response_template", "Thank you! We received your custom request."),
+                    suggested_reply=rule.get(
+                        "suggested_response_template",
+                        "Thank you! We received your custom request.",
+                    ),
                     action=rule.get("action", "EXECUTE_CUSTOM_FAST_PATH_WORKFLOW"),
                     extracted_entities=entities,
                     tokens_consumed=0,
@@ -113,213 +152,29 @@ def fast_path_classify(
                 )
                 return out
 
-    # 1. Payment Transfer Confirmation (High-intent hot lead, strict word boundaries)
-    if re.search(r"\b(?:i\s*don\s*pay|done\s*transfer|i\s*sent\s*the\s*money|alert\s*don\s*enter|see\s*debit\s*alert|receipt\s*dey|transfer\s*successful|paid|i\s*have\s*paid)\b", lower):
+    parsed = engine.predict_intent_and_slots(
+        text=text,
+        merchant_id=merchant_id,
+    )
+
+    if parsed.intent in STAGE_1_FAST_PATH_INTENTS and parsed.confidence >= 0.90:
+        meta = _STAGE_1_INTENT_METADATA[parsed.intent]
         latency = (time.perf_counter() - start_time) * 1000.0
         out = ClassificationOutput(
-            intent="CONFIRM_PAYMENT",
-            lead_tier="HOT",
-            urgency_score=10,
-            confidence=0.98,
-            detected_dialect=dialect,
-            suggested_reply="Bless up! 🙌 Your payment confirmation has been received. Our automated anti-ghosting ledger is matching your transfer ref with Moniepoint. Confirmation incoming sharp sharp!",
-            action="TRIGGER_LEDGER_RECONCILIATION",
-            extracted_entities=entities,
+            intent=parsed.intent,
+            lead_tier=meta["lead_tier"],
+            urgency_score=meta["urgency_score"],
+            confidence=max(meta["confidence"], parsed.confidence),
+            detected_dialect=parsed.detected_dialect,
+            suggested_reply=meta["suggested_reply"],
+            action=meta["action"],
+            extracted_entities=parsed.slots,
             tokens_consumed=0,
-            latency_ms=max(1.5, latency),
+            latency_ms=max(1.0, round(latency, 2)),
         )
         logger.info(
             "stage_1_fast_path_matched",
-            rule_source="confirm_payment",
-            intent=out.intent,
-            confidence=out.confidence,
-            latency_ms=out.latency_ms,
-            entities=out.extracted_entities,
-        )
-        return out
-
-    # 2. Explicit Negotiation Cancellation (Ensure 'drop am for [location]' is not misclassified as cancel)
-    is_cancel = bool(re.search(r"\b(cancel(?:\s+am|\s+order|\s+it)?|never\s*mind|no\s*buy\s*again|i\s*no\s*(?:wan|dey)\s*buy|forget\s*(?:am|it)|abort)\b", lower))
-    if not is_cancel and re.search(r"\bdrop\s*am\b", lower) and not re.search(r"\bdrop\s*am\s*(?:for|to|at)\b", lower):
-        is_cancel = True
-
-    if is_cancel:
-        latency = (time.perf_counter() - start_time) * 1000.0
-        out = ClassificationOutput(
-            intent="CANCEL_ORDER",
-            lead_tier="COLD",
-            urgency_score=5,
-            confidence=0.98,
-            detected_dialect=dialect,
-            suggested_reply="No wahala! We don clear your pending order. Let us know anytime you're ready to order again.",
-            action="CANCEL_NEGOTIATION_FRAME",
-            extracted_entities=entities,
-            tokens_consumed=0,
-            latency_ms=max(1.0, latency),
-        )
-        logger.info(
-            "stage_1_fast_path_matched",
-            rule_source="cancel_order",
-            intent=out.intent,
-            confidence=out.confidence,
-            latency_ms=out.latency_ms,
-            entities=out.extracted_entities,
-        )
-        return out
-
-    # 3. Product Availability & Stock Inquiry (ADR-0046 live catalog lookup)
-    # Catches: "Do you have rice in store?", "You get sugar?", "Is royal stallion available?", "rice dey?"
-    has_product = bool(entities.get("product"))
-    stock_inquiry_match = bool(re.search(r"(?:do\s*you\s*have|you\s*get|is\s*there|any\s*stock|in\s*stock|available|dey\s*(?:store|shop|ground)|una\s*get)\b", lower))
-    if stock_inquiry_match or (has_product and re.search(r"\b(?:dey|have|stock|available)\b", lower)):
-        if not entities.get("product"):
-            for commodity in ["rice", "sugar", "oil", "flour", "beans", "cement", "milk", "garri", "noodles", "salt"]:
-                if commodity in lower:
-                    entities["product"] = commodity
-                    has_product = True
-                    break
-        if has_product:
-            latency = (time.perf_counter() - start_time) * 1000.0
-            out = ClassificationOutput(
-                intent="PRICE_INQUIRY",
-                lead_tier="HOT",
-                urgency_score=8,
-                confidence=0.96,
-                detected_dialect=dialect,
-                suggested_reply=None,  # Delegated to ResponseOrchestrator for live PostgreSQL catalog search
-                action="SHOW_PRODUCT_CATALOG",
-                extracted_entities=entities,
-                tokens_consumed=0,
-                latency_ms=max(1.5, latency),
-            )
-            logger.info(
-                "stage_1_fast_path_matched",
-                rule_source="stock_availability_inquiry",
-                intent=out.intent,
-                confidence=out.confidence,
-                latency_ms=out.latency_ms,
-                entities=out.extracted_entities,
-            )
-            return out
-
-    # 4. Instant Order / Checkout Intent (Delegated to LocalToolDispatcher per ADR-0043)
-    if re.search(r"(?:i\s*wan\s*buy|i\s*wan\s*order|send\s*account\s*details|how\s*i\s*go\s*pay|pack\s*\d+|deliver\s*to|drop\s*am\s*(?:for|to)|i\s*need\s*\d+|give\s*me\s*\d+|i\s*want\s*\d+|buy\s*\d+)", lower):
-        latency = (time.perf_counter() - start_time) * 1000.0
-        out = ClassificationOutput(
-            intent="INSTANT_CHECKOUT_ORDER",
-            lead_tier="HOT",
-            urgency_score=9,
-            confidence=0.95,
-            detected_dialect=dialect,
-            suggested_reply=None,  # Delegated to LocalToolDispatcher for schema-governed clarification
-            action="DISPATCH_LOCAL_TOOL",
-            extracted_entities=entities,
-            tokens_consumed=0,
-            latency_ms=max(1.5, latency),
-        )
-        logger.info(
-            "stage_1_fast_path_matched",
-            rule_source="instant_checkout_order",
-            intent=out.intent,
-            confidence=out.confidence,
-            latency_ms=out.latency_ms,
-            entities=out.extracted_entities,
-        )
-        return out
-
-    # 5. Reservation & Booking Slot Hold
-    if re.search(r"(?:book\s*(?:appointment|session|slot)|reserve\s*space|lock\s*my\s*date|schedule\s*meeting|any\s*slot\s*for\s*tomorrow)", lower):
-        latency = (time.perf_counter() - start_time) * 1000.0
-        out = ClassificationOutput(
-            intent="RESERVE_APPOINTMENT",
-            lead_tier="HOT",
-            urgency_score=9,
-            confidence=0.94,
-            detected_dialect=dialect,
-            suggested_reply="Got you covered! 🗓️ We have atomic slot locking with GiST anti-double-booking protection. A 10-minute provisional hold is now active. Please confirm your ₦5,000 commitment deposit to lock your calendar slot.",
-            action="ATOMIC_SLOT_HOLD",
-            extracted_entities=entities,
-            tokens_consumed=0,
-            latency_ms=max(1.5, latency),
-        )
-        logger.info(
-            "stage_1_fast_path_matched",
-            rule_source="reserve_appointment",
-            intent=out.intent,
-            confidence=out.confidence,
-            latency_ms=out.latency_ms,
-            entities=out.extracted_entities,
-        )
-        return out
-
-    # 6. Price & Catalog Inquiry
-    if re.search(r"(?:how\s*much|wetin\s*be\s*the\s*price|price\s*dey|give\s*me\s*discount|abeg\s*reduce\s*small|last\s*price|dm\s*price|catalog)", lower):
-        latency = (time.perf_counter() - start_time) * 1000.0
-        out = ClassificationOutput(
-            intent="PRICE_INQUIRY",
-            lead_tier="WARM",
-            urgency_score=7,
-            confidence=0.92,
-            detected_dialect=dialect,
-            suggested_reply=None,  # Delegated to ResponseOrchestrator for live PostgreSQL catalog pricing
-            action="SHOW_PRODUCT_CATALOG",
-            extracted_entities=entities,
-            tokens_consumed=0,
-            latency_ms=max(1.5, latency),
-        )
-        logger.info(
-            "stage_1_fast_path_matched",
-            rule_source="price_inquiry",
-            intent=out.intent,
-            confidence=out.confidence,
-            latency_ms=out.latency_ms,
-            entities=out.extracted_entities,
-        )
-        return out
-
-    # 7. Live Agent Desk Escalation
-    if re.search(r"(?:speak\s*to\s*human|talk\s*to\s*person|agent\s*abeg|customer\s*care|call\s*me|real\s*person)", lower):
-        latency = (time.perf_counter() - start_time) * 1000.0
-        out = ClassificationOutput(
-            intent="HUMAN_AGENT_HANDOFF",
-            lead_tier="WARM",
-            urgency_score=8,
-            confidence=0.96,
-            detected_dialect=dialect,
-            suggested_reply="No wahala! I am transferring you directly to our live desk agent. Our system is injecting your full context so the agent won't ask you repeated questions. 👨‍💼",
-            action="DISPATCH_AGENT_HANDOFF",
-            extracted_entities=entities,
-            tokens_consumed=0,
-            latency_ms=max(1.5, latency),
-        )
-        logger.info(
-            "stage_1_fast_path_matched",
-            rule_source="human_agent_handoff",
-            intent=out.intent,
-            confidence=out.confidence,
-            latency_ms=out.latency_ms,
-            entities=out.extracted_entities,
-        )
-        return out
-
-    # 8. Greeting Engagement
-    if re.search(r"\b(?:how\s*far|wetin\s*dey|good\s*(?:morning|afternoon|evening)|hello|hi|hey|oya)\b", lower):
-        latency = (time.perf_counter() - start_time) * 1000.0
-        out = ClassificationOutput(
-            intent="GREETING_ENGAGEMENT",
-            lead_tier="WARM",
-            urgency_score=5,
-            confidence=0.91,
-            detected_dialect=dialect,
-            suggested_reply="How far! Welcome to Enterprise WhatsApp Hub. 🙌 We provide automated checkouts, atomic reservations, and real-time bank transfer anti-ghosting delivery across Nigeria.\n\nHow we fit help your business today?",
-            action="SHOW_MAIN_MENU",
-            extracted_entities=entities,
-            tokens_consumed=0,
-            latency_ms=max(1.5, latency),
-        )
-        logger.info(
-            "stage_1_fast_path_matched",
-            rule_source="greeting_engagement",
+            rule_source=meta["rule_source"],
             intent=out.intent,
             confidence=out.confidence,
             latency_ms=out.latency_ms,
@@ -331,6 +186,6 @@ def fast_path_classify(
     logger.info(
         "stage_1_fast_path_missed",
         latency_ms=round(latency, 2),
-        extracted_entities=entities,
+        extracted_entities=parsed.slots,
     )
     return None

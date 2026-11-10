@@ -46,6 +46,7 @@ class CartItem(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cart_id = Column(UUID(as_uuid=True), ForeignKey("ledger.checkout_carts.id", ondelete="CASCADE"), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     item_sku = Column(String(64), nullable=False)
     item_title = Column(String(256), nullable=False)
     unit_price_kobo = Column(BigInteger, nullable=False)

@@ -36,9 +36,13 @@ class LedgerService:
         session.add(cart)
         await session.flush()
 
+        from app.contexts.knowledge.offering_schemas import compute_offering_id
+
         for item_data in request.items:
+            resolved_offering_id = item_data.offering_id or UUID(compute_offering_id(merchant_id, item_data.item_sku))
             item = CartItem(
                 cart_id=cart.id,
+                offering_id=resolved_offering_id,
                 item_sku=item_data.item_sku,
                 item_title=item_data.item_title,
                 unit_price_kobo=item_data.unit_price_kobo,

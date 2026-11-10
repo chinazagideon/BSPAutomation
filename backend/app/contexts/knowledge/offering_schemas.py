@@ -6,7 +6,19 @@ paired with vertical-specific extensions (PHYSICAL_PRODUCT, SERVICE_APPOINTMENT)
 
 from enum import Enum
 from typing import List, Optional, Dict, Any, Union, Annotated, Literal
+from uuid import UUID, uuid5
 from pydantic import BaseModel, Field, model_validator
+
+OFFERING_UUID_NAMESPACE = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+DEFAULT_DEMO_MERCHANT_UUID = "00000000-0000-0000-0000-000000000001"
+
+
+def compute_offering_id(merchant_id: Optional[Union[UUID, str]], sku: str) -> str:
+    """Computes a deterministic, tenant-scoped UUIDv5 for a catalog offering."""
+    scope = str(merchant_id).strip().lower() if merchant_id else DEFAULT_DEMO_MERCHANT_UUID
+    norm_sku = (sku or "UNKNOWN").strip().upper()
+    return str(uuid5(OFFERING_UUID_NAMESPACE, f"{scope}:{norm_sku}"))
+
 
 
 class OfferingType(str, Enum):
@@ -50,6 +62,7 @@ OfferingMetadata = Annotated[
 
 class CoreOfferingDTO(BaseModel):
     id: Optional[str] = None
+    offering_id: str = ""
     merchant_id: Optional[str] = None
     sku: str
     title: str
@@ -65,7 +78,7 @@ class CoreOfferingDTO(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def compute_price_naira(cls, data: Any) -> Any:
+    def compute_price_naira_and_offering_id(cls, data: Any) -> Any:
         if isinstance(data, dict):
             if "price_naira" not in data or data["price_naira"] is None or data["price_naira"] == 0.0:
                 kobo = data.get("price_kobo")
@@ -74,4 +87,13 @@ class CoreOfferingDTO(BaseModel):
             elif "price_kobo" not in data or data["price_kobo"] is None:
                 naira = data.get("price_naira", 0.0)
                 data["price_kobo"] = int(naira * 100)
+
+            sku = data.get("sku") or ""
+            merchant_id = data.get("merchant_id")
+            canonical_id = data.get("offering_id") or data.get("id")
+            if not canonical_id or str(canonical_id).startswith("demo-"):
+                canonical_id = compute_offering_id(merchant_id, sku)
+            data["offering_id"] = str(canonical_id)
+            if not data.get("id") or str(data.get("id")).startswith("demo-"):
+                data["id"] = str(canonical_id)
         return data
