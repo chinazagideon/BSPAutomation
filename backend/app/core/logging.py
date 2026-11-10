@@ -2,12 +2,40 @@
 
 import sys
 import logging
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable, List
 import structlog
 
 from app.core.config import settings
 from app.core.telemetry import get_active_trace_id, get_active_span_id
 from app.core.trace import get_context_merchant_id, get_trace_id
+
+
+_TELEMETRY_SINKS: List[Callable[[Dict[str, Any]], None]] = []
+
+
+def register_telemetry_sink(sink: Callable[[Dict[str, Any]], None]) -> None:
+    """Registers a non-blocking callback to receive structured log event dictionaries."""
+    if sink not in _TELEMETRY_SINKS:
+        _TELEMETRY_SINKS.append(sink)
+
+
+def unregister_telemetry_sink(sink: Callable[[Dict[str, Any]], None]) -> None:
+    """Unregisters a previously registered telemetry sink."""
+    if sink in _TELEMETRY_SINKS:
+        _TELEMETRY_SINKS.remove(sink)
+
+
+def telemetry_sink_processor(logger: Any, method_name: str, event_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Forwards a shallow clone of the enriched event dict to all registered telemetry sinks."""
+    if _TELEMETRY_SINKS:
+        # Clone snapshot so sinks cannot mutate the logged payload
+        snapshot = dict(event_dict)
+        for sink in list(_TELEMETRY_SINKS):
+            try:
+                sink(snapshot)
+            except Exception:
+                pass
+    return event_dict
 
 
 def otel_context_processor(logger: Any, method_name: str, event_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,6 +71,7 @@ def setup_logging() -> None:
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         otel_context_processor,
+        telemetry_sink_processor,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.JSONRenderer(),

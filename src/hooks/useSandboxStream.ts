@@ -8,6 +8,8 @@ export interface SandboxStreamCallbacks {
   onNluTrace?: (traceEntry: any) => void;
   onFaultProfileUpdated?: (profile: any) => void;
   onNluControllerUpdated?: (controller: any) => void;
+  onTelemetryEvent?: (telemetryEntry: any) => void;
+  onTelemetryCleared?: () => void;
 }
 
 /**
@@ -38,6 +40,10 @@ export function useSandboxStream(callbacks: SandboxStreamCallbacks) {
             cb.onFaultProfileUpdated?.(parsed.data);
           } else if (parsed.type === 'nlu_controller_updated' && parsed.data) {
             cb.onNluControllerUpdated?.(parsed.data);
+          } else if (parsed.type === 'telemetry_event' && parsed.data) {
+            cb.onTelemetryEvent?.(parsed.data);
+          } else if (parsed.type === 'telemetry_cleared') {
+            cb.onTelemetryCleared?.();
           }
         } catch {
           // ignore malformed SSE frame

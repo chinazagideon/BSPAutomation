@@ -41,6 +41,11 @@ async def lifespan(app: FastAPI):
     if settings.OTEL_ENABLED:
         init_telemetry(settings.OTEL_SERVICE_NAME)
 
+    # Ensure Sandbox Store telemetry sink is initialized immediately on startup
+    if settings.ENVIRONMENT in ["development", "test"]:
+        from app.sandbox.state import get_sandbox_store
+        get_sandbox_store()
+
     logger = get_logger("app.main")
     logger.info("app_starting", app_name=settings.APP_NAME, environment=settings.ENVIRONMENT)
     print(f"[{settings.APP_NAME}] NLU State Controllers -> "

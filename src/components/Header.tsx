@@ -28,6 +28,7 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, stats }) => {
   const tabs = [
     { id: 'simulator', label: 'WhatsApp Simulator', icon: MessageSquare, badge: 'Live Phone' },
+    { id: 'telemetry', label: 'Live Telemetry', icon: Activity, badge: 'OTel + Spans' },
     { id: 'webhooks', label: 'Meta Webhooks', icon: Server, badge: '200 OK' },
     { id: 'nlu', label: 'Pidgin NLU Matrix', icon: Cpu, badge: 'Fast-Path' },
     { id: 'anti-ghosting', label: 'Anti-Ghosting Ledger', icon: ArrowRightLeft, badge: '10m Hold' },

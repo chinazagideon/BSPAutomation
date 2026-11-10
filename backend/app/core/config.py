@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
     OTEL_SAMPLING_RATIO: float = 1.0  # 1.0 in dev/test/staging; override via env in prod
     LOG_LEVEL: str = "INFO"
+    JAEGER_UI_URL: str = "http://localhost:16686"
 
 
 settings = Settings()

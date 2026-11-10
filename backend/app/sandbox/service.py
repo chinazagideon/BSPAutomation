@@ -188,6 +188,7 @@ class SandboxOrchestrationService:
         messages = await store.get_messages(phone_number_id=phone_number_id)
         webhook_logs = await store.get_webhook_logs()
         nlu_traces = await store.get_nlu_traces()
+        telemetry_events = await store.get_telemetry_events(limit=100)
 
         channel_ctx = await MerchantIdentificationService.resolve_inbound(phone_number_id)
         merchant_id = channel_ctx.merchant_id if channel_ctx else str(ALABA_AGRO_MERCHANT_ID)
@@ -218,7 +219,9 @@ class SandboxOrchestrationService:
             "messages": messages,
             "webhook_logs": webhook_logs,
             "nlu_traces": nlu_traces,
+            "telemetry_events": telemetry_events,
             "templates": store.get_templates(),
+            "jaeger_ui_url": settings.JAEGER_UI_URL,
         }
 
     @classmethod
@@ -418,6 +421,7 @@ class SandboxOrchestrationService:
         messages = await store.get_messages(phone_number_id=req.phone_number_id)
         window = await store.check_customer_service_window(req.phone_number_id, req.customer_phone)
         nlu_traces = await store.get_nlu_traces()
+        telemetry_events = await store.get_telemetry_events(limit=50)
 
         return {
             "status": "OK",
@@ -428,6 +432,7 @@ class SandboxOrchestrationService:
             "window_state": window,
             "messages": messages[-10:],
             "latest_nlu_trace": nlu_traces[0] if nlu_traces else None,
+            "telemetry_events": telemetry_events,
         }
 
     @classmethod

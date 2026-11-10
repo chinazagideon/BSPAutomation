@@ -48,3 +48,23 @@ class SandboxTemplateSendRequest(BaseModel):
     template_name: str = "re_engagement_window_opener"
     language_code: str = "en"
     parameters: List[str] = Field(default_factory=lambda: ["Tunde", "Alaba Agro Depot"])
+
+
+class SandboxTelemetryRecord(BaseModel):
+    """Normalized OpenTelemetry-correlated structlog event dispatched to WebUI."""
+    id: str
+    event: str
+    level: str = "info"
+    timestamp: str
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    merchant_id: Optional[str] = None
+    latency_ms: Optional[float] = None
+    stage: Optional[str] = None
+    intent: Optional[str] = None
+    confidence: Optional[float] = None
+    action: Optional[str] = None
+    model: Optional[str] = None
+    tokens_consumed: Optional[int] = None
+    error: Optional[str] = None
+    attributes: Dict[str, Any] = Field(default_factory=dict)

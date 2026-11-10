@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  Activity,
   Check,
   Flame,
   MapPin,
@@ -19,6 +20,7 @@ import {
   SandboxNegotiationFrame,
   SandboxNluController,
   SandboxWindowState,
+  TelemetryEventRecord,
 } from '../types';
 import { FaultInjectionPanel } from './simulator/FaultInjectionPanel';
 import { InteractiveListDrawer } from './simulator/InteractiveListDrawer';
@@ -26,6 +28,7 @@ import { NluFrameInspectorPanel } from './simulator/NluFrameInspectorPanel';
 import { PhoneChatBubble } from './simulator/PhoneChatBubble';
 import { ScenarioPresetsPanel } from './simulator/ScenarioPresetsPanel';
 import { SimulatorControlBar } from './simulator/SimulatorControlBar';
+import { TelemetryStreamPanel } from './simulator/TelemetryStreamPanel';
 
 const DEFAULT_MERCHANTS: SandboxMerchant[] = [
   {
@@ -81,6 +84,9 @@ interface WhatsAppPhoneSimulatorProps {
   onSendBurst?: (messages: string[]) => Promise<void>;
   onSendTemplate?: (templateName: string) => Promise<void>;
   isBackendConnected?: boolean;
+  telemetryEvents?: TelemetryEventRecord[];
+  onClearTelemetry?: () => Promise<void>;
+  jaegerUiUrl?: string;
 }
 
 export const WhatsAppPhoneSimulator: React.FC<WhatsAppPhoneSimulatorProps> = ({
@@ -126,11 +132,14 @@ export const WhatsAppPhoneSimulator: React.FC<WhatsAppPhoneSimulatorProps> = ({
   onSendBurst,
   onSendTemplate,
   isBackendConnected = false,
+  telemetryEvents = [],
+  onClearTelemetry,
+  jaegerUiUrl,
 }) => {
   const [inputText, setInputText] = useState('');
   const [remainingHoldSeconds, setRemainingHoldSeconds] = useState(600);
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<'scenarios' | 'chaos' | 'nlu'>('scenarios');
+  const [leftTab, setLeftTab] = useState<'scenarios' | 'chaos' | 'nlu' | 'telemetry'>('scenarios');
   const [openListDrawer, setOpenListDrawer] = useState<{
     title: string;
     sections: InteractiveListSection[];
@@ -244,6 +253,18 @@ export const WhatsAppPhoneSimulator: React.FC<WhatsAppPhoneSimulatorProps> = ({
                 <Sliders className="w-3 h-3" />
                 <span>NLU & Frame</span>
               </button>
+              <button
+                onClick={() => setLeftTab('telemetry')}
+                id="tab-telemetry-btn"
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors flex items-center gap-1 ${
+                  leftTab === 'telemetry'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                    : 'text-gray-400 hover:text-white bg-white/5'
+                }`}
+              >
+                <Activity className="w-3 h-3" />
+                <span>Telemetry</span>
+              </button>
             </div>
 
             <button
@@ -282,6 +303,14 @@ export const WhatsAppPhoneSimulator: React.FC<WhatsAppPhoneSimulatorProps> = ({
               nluController={nluController}
               activeFrame={activeFrame}
               onUpdateNluController={onUpdateNluController}
+            />
+          )}
+
+          {leftTab === 'telemetry' && (
+            <TelemetryStreamPanel
+              telemetryEvents={telemetryEvents}
+              onClearTelemetry={onClearTelemetry}
+              jaegerUiUrl={jaegerUiUrl}
             />
           )}
         </div>

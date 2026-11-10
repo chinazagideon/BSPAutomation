@@ -213,3 +213,22 @@ export interface NdpaConsentRecord {
   immutableHash: string;
   status: 'ACTIVE' | 'REVOKED';
 }
+
+export interface TelemetryEventRecord {
+  id: string;
+  event: string;
+  level: 'info' | 'warning' | 'error' | 'debug' | string;
+  timestamp: string;
+  trace_id?: string;
+  span_id?: string;
+  merchant_id?: string;
+  latency_ms?: number;
+  stage?: string;
+  intent?: string;
+  confidence?: number;
+  action?: string;
+  model?: string;
+  tokens_consumed?: number;
+  error?: string;
+  attributes?: Record<string, any>;
+}

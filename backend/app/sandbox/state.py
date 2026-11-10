@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.core.logging import register_telemetry_sink
+from app.sandbox.schemas import SandboxTelemetryRecord
 
 
 class SandboxFaultProfile(BaseModel):
@@ -64,6 +66,7 @@ class SandboxMessageRecord(BaseModel):
 _IN_MEMORY_MESSAGES: List[Dict[str, Any]] = []
 _IN_MEMORY_WEBHOOK_LOGS: List[Dict[str, Any]] = []
 _IN_MEMORY_NLU_TRACES: List[Dict[str, Any]] = []
+_IN_MEMORY_TELEMETRY_EVENTS: List[Dict[str, Any]] = []
 _IN_MEMORY_WINDOW_MAP: Dict[str, float] = {}
 _IN_MEMORY_FAULT_PROFILE = SandboxFaultProfile()
 _IN_MEMORY_NLU_CONTROLLER = SandboxNLUController(
@@ -108,6 +111,7 @@ class SandboxStateStore:
     REDIS_MESSAGES_KEY = "sandbox:messages"
     REDIS_WEBHOOKS_KEY = "sandbox:webhook_logs"
     REDIS_NLU_TRACES_KEY = "sandbox:nlu_traces"
+    REDIS_TELEMETRY_KEY = "sandbox:telemetry_events"
     REDIS_WINDOW_PREFIX = "sandbox:window_24h:"
     REDIS_EVENTS_CHANNEL = "sandbox:events_stream"
 
@@ -371,6 +375,99 @@ class SandboxStateStore:
                 pass
         return list(_IN_MEMORY_NLU_TRACES[:50])
 
+    # -------------------------------------------------------------------------
+    # Structured Telemetry Events (structlog + OpenTelemetry correlations)
+    # -------------------------------------------------------------------------
+    def record_telemetry_event_sync(self, raw_event: Dict[str, Any]) -> None:
+        """Synchronously called by structlog telemetry sink processor."""
+        try:
+            event_name = str(raw_event.get("event", "log"))
+            # Normalize core fields
+            rec = SandboxTelemetryRecord(
+                id=f"tel-{uuid.uuid4().hex[:10]}",
+                event=event_name,
+                level=str(raw_event.get("level", "info")),
+                timestamp=str(raw_event.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+                trace_id=raw_event.get("trace_id"),
+                span_id=raw_event.get("span_id"),
+                merchant_id=raw_event.get("merchant_id"),
+                latency_ms=raw_event.get("latency_ms"),
+                stage=raw_event.get("stage"),
+                intent=raw_event.get("intent"),
+                confidence=raw_event.get("confidence"),
+                action=raw_event.get("action"),
+                model=raw_event.get("model"),
+                tokens_consumed=raw_event.get("tokens_consumed"),
+                error=raw_event.get("error"),
+                attributes={
+                    k: v for k, v in raw_event.items()
+                    if k not in (
+                        "event", "level", "timestamp", "trace_id", "span_id",
+                        "merchant_id", "latency_ms", "stage", "intent",
+                        "confidence", "action", "model", "tokens_consumed", "error"
+                    )
+                },
+            )
+            payload = rec.model_dump()
+            _IN_MEMORY_TELEMETRY_EVENTS.insert(0, payload)
+            if len(_IN_MEMORY_TELEMETRY_EVENTS) > 200:
+                del _IN_MEMORY_TELEMETRY_EVENTS[200:]
+
+            envelope = {
+                "id": f"evt-{uuid.uuid4().hex[:10]}",
+                "type": "telemetry_event",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": payload,
+            }
+            for q in list(_SSE_SUBSCRIBERS):
+                try:
+                    q.put_nowait(envelope)
+                except asyncio.QueueFull:
+                    pass
+
+            # If an async event loop is running, schedule background Redis push
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    loop.create_task(self._persist_telemetry_to_redis(payload, envelope))
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            import sys
+            print(f"[SandboxTelemetrySink] Error recording telemetry: {exc}", file=sys.stderr)
+
+    async def _persist_telemetry_to_redis(self, payload: Dict[str, Any], envelope: Dict[str, Any]) -> None:
+        r = await self._get_redis()
+        if r:
+            try:
+                await r.lpush(self.REDIS_TELEMETRY_KEY, json.dumps(payload))
+                await r.ltrim(self.REDIS_TELEMETRY_KEY, 0, 199)
+                await r.publish(self.REDIS_EVENTS_CHANNEL, json.dumps(envelope))
+            except Exception:
+                pass
+
+    async def get_telemetry_events(self, limit: int = 100) -> List[Dict[str, Any]]:
+        r = await self._get_redis()
+        if r:
+            try:
+                raw_list = await r.lrange(self.REDIS_TELEMETRY_KEY, 0, limit - 1)
+                if raw_list:
+                    return [json.loads(x) for x in raw_list]
+            except Exception:
+                pass
+        return list(_IN_MEMORY_TELEMETRY_EVENTS[:limit])
+
+    async def clear_telemetry(self) -> None:
+        global _IN_MEMORY_TELEMETRY_EVENTS
+        _IN_MEMORY_TELEMETRY_EVENTS.clear()
+        r = await self._get_redis()
+        if r:
+            try:
+                await r.delete(self.REDIS_TELEMETRY_KEY)
+            except Exception:
+                pass
+        await self.broadcast_event("telemetry_cleared", {})
+
     async def clear_conversation(self, merchant_id: Optional[str] = None, customer_phone: Optional[str] = None) -> None:
         global _IN_MEMORY_MESSAGES
         _IN_MEMORY_MESSAGES.clear()
@@ -396,4 +493,6 @@ def get_sandbox_store() -> SandboxStateStore:
     global _SANDBOX_STORE_SINGLETON
     if _SANDBOX_STORE_SINGLETON is None:
         _SANDBOX_STORE_SINGLETON = SandboxStateStore()
+        # Register store telemetry hook into structlog pipeline
+        register_telemetry_sink(_SANDBOX_STORE_SINGLETON.record_telemetry_event_sync)
     return _SANDBOX_STORE_SINGLETON

@@ -7,6 +7,7 @@ import { AntiGhostingLedger } from './components/AntiGhostingLedger';
 import { AtomicReservationGrid } from './components/AtomicReservationGrid';
 import { ResilientAgentDesk } from './components/ResilientAgentDesk';
 import { PiiNdpaVault } from './components/PiiNdpaVault';
+import { TelemetryExplorer } from './components/TelemetryExplorer';
 import { APP_CONFIG } from './config/env';
 import {
   INITIAL_CHAT_MESSAGES,
@@ -26,6 +27,7 @@ import {
   useSendTemplateMutation,
   useUpdateFaultProfileMutation,
   useUpdateNluControllerMutation,
+  useClearSandboxTelemetryMutation,
 } from './hooks/useSandboxApi';
 import { useSandboxStream } from './hooks/useSandboxStream';
 import { apiClient } from './lib/apiClient';
@@ -43,6 +45,7 @@ import {
   SandboxNegotiationFrame,
   SandboxNluController,
   SandboxWindowState,
+  TelemetryEventRecord,
 } from './types';
 
 function mapSandboxMsgToChatMessage(raw: any, latestTrace?: any): ChatMessage {
@@ -148,6 +151,8 @@ export default function App() {
   });
   const [activeFrame, setActiveFrame] =
     useState<SandboxNegotiationFrame | null>(null);
+  const [telemetryEvents, setTelemetryEvents] = useState<TelemetryEventRecord[]>([]);
+  const [jaegerUiUrl, setJaegerUiUrl] = useState<string>('http://localhost:16686');
 
   const [isLoading, setIsLoading] = useState(false);
   const [stats, setStats] = useState({
@@ -186,6 +191,10 @@ export default function App() {
     activePhoneNumberId,
     APP_CONFIG.DEFAULT_CUSTOMER_PHONE
   );
+  const clearTelemetryMutation = useClearSandboxTelemetryMutation(
+    activePhoneNumberId,
+    APP_CONFIG.DEFAULT_CUSTOMER_PHONE
+  );
 
   // Hydrate local state when TanStack Query state resolves
   useEffect(() => {
@@ -198,6 +207,10 @@ export default function App() {
     if (data.nlu_controller) setNluController(data.nlu_controller);
     if (data.window_state) setWindowState(data.window_state);
     setActiveFrame(data.active_frame || null);
+    if (data.jaeger_ui_url) setJaegerUiUrl(data.jaeger_ui_url);
+    if (Array.isArray(data.telemetry_events)) {
+      setTelemetryEvents(data.telemetry_events);
+    }
 
     if (Array.isArray(data.messages) && data.messages.length > 0) {
       const latestTrace = data.nlu_traces?.[0];
@@ -248,6 +261,13 @@ export default function App() {
     },
     onFaultProfileUpdated: (profile) => setFaultProfile(profile),
     onNluControllerUpdated: (ctrl) => setNluController(ctrl),
+    onTelemetryEvent: (telemetryEntry) => {
+      setTelemetryEvents((prev) => {
+        if (prev.some((e) => e.id === telemetryEntry.id)) return prev;
+        return [telemetryEntry, ...prev.slice(0, 199)];
+      });
+    },
+    onTelemetryCleared: () => setTelemetryEvents([]),
   });
 
   // Handler: Send message or interactive action in WhatsApp simulator
@@ -300,6 +320,16 @@ export default function App() {
         setWebhookLogs((prev) => {
           if (prev.some((w) => w.id === data.webhook_log.id)) return prev;
           return [data.webhook_log, ...prev];
+        });
+      }
+
+      if (Array.isArray(data.telemetry_events) && data.telemetry_events.length > 0) {
+        setTelemetryEvents((prev) => {
+          const existingIds = new Set(prev.map((e) => e.id));
+          const newEntries = data.telemetry_events.filter(
+            (e: TelemetryEventRecord) => !existingIds.has(e.id)
+          );
+          return newEntries.length > 0 ? [...newEntries, ...prev].slice(0, 200) : prev;
         });
       }
 
@@ -628,6 +658,15 @@ export default function App() {
     setActiveFrame(null);
   };
 
+  const handleClearTelemetry = async () => {
+    setTelemetryEvents([]);
+    try {
+      await clearTelemetryMutation.mutateAsync();
+    } catch {
+      // offline fallback
+    }
+  };
+
   const handleTestNlu = (text: string) =>
     apiClient.processFallbackNlu({ message: text });
 
@@ -715,6 +754,17 @@ export default function App() {
             onSendBurst={handleSendBurst}
             onSendTemplate={handleSendTemplate}
             isBackendConnected={isBackendConnected}
+            telemetryEvents={telemetryEvents}
+            onClearTelemetry={handleClearTelemetry}
+            jaegerUiUrl={jaegerUiUrl}
+          />
+        )}
+
+        {activeTab === 'telemetry' && (
+          <TelemetryExplorer
+            telemetryEvents={telemetryEvents}
+            onClearTelemetry={handleClearTelemetry}
+            jaegerUiUrl={jaegerUiUrl}
           />
         )}
 

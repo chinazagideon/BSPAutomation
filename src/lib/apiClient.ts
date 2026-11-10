@@ -173,6 +173,11 @@ export const apiClient = {
       { method: 'POST' }
     ),
 
+  clearSandboxTelemetry: () =>
+    request<{ status: string }>(`${APP_CONFIG.API_V1_BASE}/sandbox/telemetry`, {
+      method: 'DELETE',
+    }),
+
   triggerProviderWebhook: (provider: string, payload: Record<string, any>) =>
     request<any>(`${APP_CONFIG.API_V1_BASE}/ingress/webhooks/${encodeURIComponent(provider)}`, {
       method: 'POST',

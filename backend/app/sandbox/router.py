@@ -75,6 +75,13 @@ async def reset_sandbox_session(
     return await SandboxOrchestrationService.reset_session(phone_number_id, customer_phone)
 
 
+@router.delete("/telemetry")
+async def clear_sandbox_telemetry():
+    """Clears the real-time telemetry buffer."""
+    await get_sandbox_store().clear_telemetry()
+    return {"status": "CLEARED"}
+
+
 @router.get("/stream")
 async def sandbox_sse_stream(request: Request):
     """Streams real-time outbound WhatsApp messages, webhook logs, and NLU traces to the React WebUI."""
