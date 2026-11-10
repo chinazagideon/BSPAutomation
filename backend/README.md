@@ -1,41 +1,12 @@
-# Enterprise Conversational Workflow Platform — Backend Server
+# BSPAutomation — Backend Server
 
-A high-concurrency, multi-tenant Python **FastAPI & AsyncIO** backend built for the **Enterprise Conversational Workflow Platform for Nigerian SMEs**.
+A multi-tenant Python **FastAPI & AsyncIO** backend for a Conversational Workflow Platform.
 
 ---
 
 ## 1. System Architecture
 
 The backend is architected as a **Context-First Modular Monolith (Domain-Driven Design / Hexagonal)** strictly partitioning the 5 enterprise bounded contexts defined in `CONTEXT-MAP.md`:
-
-```
-backend/
-├── app/
-│   ├── main.py                  # FastAPI entrypoint, lifespan, CORS, route composition
-│   ├── core/                    # Core Infrastructure & Shared Kernel
-│   │   ├── config.py            # Pydantic Settings & environment state controllers
-│   │   ├── database.py          # Async SQLAlchemy 2.0 engine & RLS tenant sessions
-│   │   ├── tenant.py            # Composite multi-channel tenant resolver
-│   │   ├── security.py          # JWT, password hashing & AES-256 PII encryption
-│   │   ├── events.py            # Asynchronous EventBus abstraction
-│   │   └── worker.py            # ARQ Redis background worker settings & cron jobs
-│   ├── adapters/                # Hexagonal Port/Adapter external rails & mock harnesses
-│   │   ├── base.py              # Port interfaces (PaymentGatewayPort, WhatsAppBSPPort, LLMProviderPort)
-│   │   ├── moniepoint.py        # Moniepoint MFB adapter + MockMoniepointAdapter
-│   │   ├── whatsapp.py          # Meta Cloud API / Termii adapter + MockWhatsAppBSPAdapter
-│   │   ├── custom_classifier.py # ONNX Runtime / HuggingFace adapter + MockCustomClassifierAdapter
-│   │   └── llm.py               # Google Gemini 3.7 Flash adapter + MockLLMAdapter
-│   └── contexts/                # 5 Bounded Contexts + Core
-│       ├── core/                # Tenant infrastructure, merchants, users, RBAC
-│       ├── ingress/             # 3-Stage Cascading NLU Pipeline, Webhooks (<25ms ACK), AI Wallet
-│       ├── ledger/              # Anti-Ghosting carts, Virtual NUBANs, 4-Leg Double-Entry accounting
-│       ├── reservations/        # Atomic slots, PostgreSQL GiST range locks, 10-min hold releaser
-│       ├── desk/                # Live agent NEPA heartbeat telemetry (<60s failover), 6-field Context Cards
-│       └── compliance/          # NDPA 2023 SHA-256 Chained Consent Ledger, Ephemeral PII Token Vault
-└── tests/                       # Pytest asynchronous domain invariant test suite
-```
-
----
 
 ## 2. 3-Stage Cascading Hybrid NLU Pipeline
 

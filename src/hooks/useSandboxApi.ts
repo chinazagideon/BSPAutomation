@@ -115,3 +115,18 @@ export function useResetSandboxMutation(
     },
   });
 }
+
+export function useClearSandboxTelemetryMutation(
+  phoneNumberId: string = APP_CONFIG.DEFAULT_PHONE_NUMBER_ID,
+  customerPhone: string = APP_CONFIG.DEFAULT_CUSTOMER_PHONE
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiClient.clearSandboxTelemetry(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: SANDBOX_QUERY_KEYS.state(phoneNumberId, customerPhone),
+      });
+    },
+  });
+}

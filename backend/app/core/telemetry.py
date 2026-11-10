@@ -91,21 +91,19 @@ def init_telemetry(service_name: Optional[str] = None) -> TracerProvider:
     if settings.ENVIRONMENT == "test":
         # Silent during test runs
         pass
-    elif settings.ENVIRONMENT == "development":
-        # Silent console output unless explicitly debugged
-        if settings.DEBUG and False:  # Keep quiet by default unless enabled
-            provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     else:
-        # Staging / Production: OTLP gRPC via non-blocking BatchSpanProcessor
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            otlp_exporter = OTLPSpanExporter(
-                endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
-                insecure=True,
-            )
-            provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-        except Exception as err:
-            logger.warning(f"[Telemetry] Could not initialize OTLP exporter: {err}")
+        # Development / Staging / Production: Export to OTLP collector if configured
+        if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
+            try:
+                from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+                otlp_exporter = OTLPSpanExporter(
+                    endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
+                    insecure=True,
+                )
+                provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+                logger.info(f"[Telemetry] Initialized OTLP gRPC exporter -> {settings.OTEL_EXPORTER_OTLP_ENDPOINT}")
+            except Exception as err:
+                logger.warning(f"[Telemetry] Could not initialize OTLP exporter: {err}")
 
     trace.set_tracer_provider(provider)
     _TRACER_PROVIDER = provider

@@ -20,3 +20,5 @@ venv/
 ENV/
 
 .compiler
+kudiflow-analysis.md
+btw.md

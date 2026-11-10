@@ -16,6 +16,7 @@ export interface SandboxStateResponse {
   nlu_controller: SandboxNluController;
   window_state: SandboxWindowState;
   active_frame: SandboxNegotiationFrame | null;
+  context_stack?: SandboxNegotiationFrame[];
   messages: any[];
   webhook_logs: any[];
   nlu_traces: any[];
@@ -171,6 +172,11 @@ export const apiClient = {
       )}&customer_phone=${encodeURIComponent(customerPhone)}`,
       { method: 'POST' }
     ),
+
+  clearSandboxTelemetry: () =>
+    request<{ status: string }>(`${APP_CONFIG.API_V1_BASE}/sandbox/telemetry`, {
+      method: 'DELETE',
+    }),
 
   triggerProviderWebhook: (provider: string, payload: Record<string, any>) =>
     request<any>(`${APP_CONFIG.API_V1_BASE}/ingress/webhooks/${encodeURIComponent(provider)}`, {

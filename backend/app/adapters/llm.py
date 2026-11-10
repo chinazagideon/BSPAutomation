@@ -123,70 +123,13 @@ class GeminiFlashAdapter(LLMProviderPort):
             return self._build_handoff_fallback(start_time, str(exc), prompt)
 
     def _parse_and_normalize_response(self, response: Any) -> Optional[ClassificationOutput]:
-        """Extracts JSON and normalizes schema constraints for Pydantic type safety."""
-        raw_text = getattr(response, "text", "") or ""
-        if not raw_text.strip():
+        """Validates and normalizes JSON response declaratively via ClassificationOutput Annotated types."""
+        raw_text = (getattr(response, "text", "") or "").strip()
+        if not raw_text:
             return None
 
         try:
-            data = json.loads(raw_text)
-            if not isinstance(data, dict):
-                return None
-
-            # 1. Lead Tier
-            tier = str(data.get("lead_tier", "WARM")).upper()
-            if "HOT" in tier or "1" in tier:
-                clean_tier = "HOT"
-            elif "COLD" in tier or "3" in tier:
-                clean_tier = "COLD"
-            else:
-                clean_tier = "WARM"
-
-            # 2. Urgency Score (1 to 10)
-            urgency_raw = data.get("urgency_score", 7)
-            try:
-                urgency_num = float(urgency_raw)
-                if 0.0 <= urgency_num <= 1.0:
-                    urgency_score = int(round(urgency_num * 10))
-                else:
-                    urgency_score = int(round(urgency_num))
-                urgency_score = max(1, min(10, urgency_score))
-            except Exception:
-                urgency_score = 7
-
-            # 3. Confidence (0.0 to 1.0)
-            conf_raw = data.get("confidence", 0.90)
-            try:
-                conf = float(conf_raw)
-                if conf > 1.0 and conf <= 100.0:
-                    conf = conf / 100.0
-                conf = max(0.0, min(1.0, conf))
-            except Exception:
-                conf = 0.90
-
-            # 4. Intent & Dialect
-            intent = str(data.get("intent", "GENERAL_INQUIRY")).upper().strip()
-            dialect = str(data.get("detected_dialect", "Nigerian Commercial Slang")).strip()
-
-            # 5. Suggested Reply & Action
-            suggested_reply = data.get("suggested_reply")
-            action = data.get("action")
-
-            # 6. Extracted Entities
-            extracted_entities = data.get("extracted_entities")
-            if not isinstance(extracted_entities, dict):
-                extracted_entities = {}
-
-            return ClassificationOutput(
-                intent=intent,
-                lead_tier=clean_tier,
-                urgency_score=urgency_score,
-                confidence=conf,
-                detected_dialect=dialect,
-                suggested_reply=suggested_reply,
-                action=action,
-                extracted_entities=extracted_entities,
-            )
+            return ClassificationOutput.model_validate_json(raw_text)
         except Exception as exc:
             logger.warning("gemini_json_parsing_failed", error=str(exc), raw_text=raw_text[:200])
             return None

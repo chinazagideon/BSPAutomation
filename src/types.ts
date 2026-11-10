@@ -67,9 +67,11 @@ export interface SandboxNegotiationFrame {
   phone_hash: string;
   active_tool: string;
   intent: string;
+  node_type?: 'TRANSACTIONAL' | 'ATOMIC_QUERY' | 'HANDOFF';
   bound_slots: Record<string, any>;
   missing_slots: string[];
   pending_offer?: Record<string, any> | null;
+  expires_at?: number;
 }
 
 export interface ChatMessage {
@@ -210,4 +212,23 @@ export interface NdpaConsentRecord {
   ipAddress: string;
   immutableHash: string;
   status: 'ACTIVE' | 'REVOKED';
+}
+
+export interface TelemetryEventRecord {
+  id: string;
+  event: string;
+  level: 'info' | 'warning' | 'error' | 'debug' | string;
+  timestamp: string;
+  trace_id?: string;
+  span_id?: string;
+  merchant_id?: string;
+  latency_ms?: number;
+  stage?: string;
+  intent?: string;
+  confidence?: number;
+  action?: string;
+  model?: string;
+  tokens_consumed?: number;
+  error?: string;
+  attributes?: Record<string, any>;
 }

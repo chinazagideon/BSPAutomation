@@ -58,15 +58,15 @@ export const NluFrameInspectorPanel: React.FC<NluFrameInspectorPanelProps> = ({
         ))}
       </div>
 
-      {/* Live Redis NegotiationFrame Inspector */}
+      {/* Live Redis LIFO ContextStack & NegotiationFrame Inspector */}
       <div className="p-3 rounded-xl bg-[#0e0e10] border border-white/5 space-y-2">
         <div className="flex items-center justify-between">
           <span className="font-semibold text-gray-200 flex items-center gap-1.5">
             <Activity className="w-3.5 h-3.5 text-emerald-400" />
-            Active NegotiationFrame (15m Sliding TTL)
+            LIFO ContextStack Top Frame (15m TTL)
           </span>
           <span className="text-[10px] font-mono text-gray-400">
-            {activeFrame ? 'ACTIVE' : 'EMPTY'}
+            {activeFrame ? `ACTIVE (${activeFrame.node_type || 'TRANSACTIONAL'})` : 'EMPTY'}
           </span>
         </div>
         {activeFrame ? (
