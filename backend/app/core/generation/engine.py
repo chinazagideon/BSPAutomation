@@ -162,6 +162,7 @@ class CentralInferenceEngine(InferenceEnginePort):
                     confidence=fp_result.confidence,
                     latency_ms=round(latency, 2),
                     tokens_consumed=0,
+                    text=text,
                 )
                 return ClassificationResult(
                     intent=fp_result.intent,
@@ -208,6 +209,7 @@ class CentralInferenceEngine(InferenceEnginePort):
                 threshold=settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD,
                 matched=is_custom_hit,
                 latency_ms=round(custom_res.latency_ms, 2),
+                text=text,
             )
 
             if is_custom_hit:
@@ -225,6 +227,7 @@ class CentralInferenceEngine(InferenceEnginePort):
                     confidence=custom_res.confidence,
                     latency_ms=round(latency, 2),
                     tokens_consumed=0,
+                    text=text,
                 )
                 return ClassificationResult(
                     intent=custom_res.intent,
@@ -321,6 +324,7 @@ class CentralInferenceEngine(InferenceEnginePort):
                     "stage_3_llm_dispatch_started",
                     model=settings.GEMINI_MODEL,
                     text_length=len(text),
+                    prompt=prompt
                 )
                 llm_res = await llm_adapter.generate_chat_completion(prompt, system_instruction)
                 latency = (time.perf_counter() - start_time) * 1000.0
