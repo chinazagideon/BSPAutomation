@@ -1,12 +1,29 @@
 """Pydantic v2 Schemas for Ingress Webhooks and NLU Classification."""
 
-from typing import Optional, Dict, Any, List, Literal
+import re
+from typing import Optional, Dict, Any, List, Literal, Union
 from uuid import UUID
 from datetime import datetime
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.core.response import CamelModel
 from app.core.generation.ports import ExecutionPolicy
+
+_DIVIDER_RE = re.compile(r"[━─]{3,}")
+
+
+class DialogueTurn(CamelModel):
+    """Role-attributed conversation turn for Stage 3 LLM context."""
+    role: Literal["customer", "assistant"]
+    text: str
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _clean_ui_chrome(cls, v: Any) -> str:
+        raw = str(v or "")
+        cleaned = _DIVIDER_RE.sub("", raw)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
 
 
 class WebhookMessageItem(CamelModel):
@@ -26,7 +43,7 @@ class NLUClassificationRequest(CamelModel):
     message: str = Field(..., min_length=1)
     customer_phone: str = "+2348031234567"
     customer_name: Optional[str] = "Tunde Adeleke"
-    previous_context: List[str] = Field(default_factory=list)
+    previous_context: List[Union[DialogueTurn, str]] = Field(default_factory=list)
     policy: Optional[ExecutionPolicy] = Field(
         default=None,
         description="Optional execution policy override (e.g. DEEP_REASONING, FASTEST_PATH, LOCAL_MODEL, CASCADING_FALLBACK)",

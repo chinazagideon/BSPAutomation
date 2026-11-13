@@ -23,6 +23,36 @@ except ImportError:
     types = None  # type: ignore
 
 
+_COMMODITY_KEYWORDS = ("rice", "sugar", "oil", "flour", "beans", "cement", "milk", "garri", "noodles")
+_ORDER_STATUS_PATTERNS = (
+    "when is my order",
+    "when is the my order",
+    "when will my order",
+    "where is my order",
+    "order status",
+    "track my order",
+    "dispatch status",
+    "rider where",
+    "wetin happen to my order",
+    "my order never reach",
+    "where my delivery",
+    "going to arrive",
+    "arrive",
+)
+
+
+def _extract_latest_customer_message(prompt: str) -> str:
+    """Extracts only the Latest Customer Message segment from a composed Stage 3 prompt."""
+    if not prompt:
+        return ""
+    match = re.search(
+        r"(?:latest\s+)?customer\s*message\s*:\s*(.+)",
+        prompt,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else prompt.strip()
+
+
 class GeminiFlashAdapter(LLMProviderPort):
     """Production Google Gemini Flash Adapter with Structured Output (ADR-0044)."""
 
@@ -142,11 +172,28 @@ class GeminiFlashAdapter(LLMProviderPort):
     ) -> ClassificationOutput:
         """Constructs an instant agent handoff fallback or contextual recovery without billing tokens (ADR-0044)."""
         latency_ms = (time.perf_counter() - start_time) * 1000.0
-        lower = (prompt or "").lower()
+        latest_msg = _extract_latest_customer_message(prompt)
+        lower = latest_msg.lower()
 
-        # Contextual degradation: check if prompt mentions an in-stock commodity
+        # Check order status & handoff signals in Latest Customer Message BEFORE commodity keywords
+        if any(p in lower for p in _ORDER_STATUS_PATTERNS):
+            logger.info("gemini_fallback_order_status_recovery", error=error_detail[:80])
+            return ClassificationOutput(
+                intent="ORDER_STATUS_INQUIRY",
+                lead_tier="HOT",
+                urgency_score=8,
+                confidence=0.85,
+                detected_dialect="Standard English",
+                suggested_reply=None,
+                action="RESOLVE_ORDER_STATUS",
+                extracted_entities={"error_fallback": True, "reason": error_detail[:120]},
+                tokens_consumed=0,
+                latency_ms=round(latency_ms, 2),
+            )
+
+        # Contextual degradation: check if Latest Customer Message mentions an in-stock commodity
         detected_prod = None
-        for p in ["rice", "sugar", "oil", "flour", "beans", "cement", "milk", "garri", "noodles"]:
+        for p in _COMMODITY_KEYWORDS:
             if re.search(rf"\b{p}\b", lower):
                 detected_prod = p
                 break
@@ -197,9 +244,8 @@ class MockLLMAdapter(LLMProviderPort):
         lower = prompt.lower()
         sys_lower = (system_instruction or "").lower()
 
-        # Extract customer message from prompt if formatted with "Customer Message:"
-        msg_match = re.search(r"customer\s*message\s*:\s*(.+)", prompt, flags=re.IGNORECASE | re.DOTALL)
-        customer_msg = msg_match.group(1).strip() if msg_match else prompt.strip()
+        # Extract customer message from prompt if formatted with "Customer Message:" or "Latest Customer Message:"
+        customer_msg = _extract_latest_customer_message(prompt)
         msg_lower = customer_msg.lower()
 
         # Detect dialect
@@ -216,11 +262,19 @@ class MockLLMAdapter(LLMProviderPort):
         action = "NURTURE_OR_ESCALATE_TO_AGENT"
         extracted_entities: Dict[str, Any] = {"topic": "B2B SME Commercial Inquiry"}
 
-        if "baking" in lower or "bakery" in lower or "flour" in lower:
+        if "baking" in msg_lower or "bakery" in msg_lower or "flour" in msg_lower:
             suggested_reply = "(: Welcome! We have industrial bakery ovens and Grade A baking flour ready for dispatch across Ikeja and Ibadan."
             intent = "VERTICAL_SPECIFIC_INQUIRY"
             lead_tier = "HOT"
             urgency_score = 8
+        elif any(w in msg_lower for w in _ORDER_STATUS_PATTERNS):
+            intent = "ORDER_STATUS_INQUIRY"
+            lead_tier = "HOT"
+            urgency_score = 8
+            action = "RESOLVE_ORDER_STATUS"
+            suggested_reply = (
+                f"Checking your live order tracking status with {merchant_name}..."
+            )
         elif any(w in msg_lower for w in ["rice", "sugar", "oil", "beans", "garri", "cement", "barber", "haircut", "massage", "facial", "inverter", "laptop", "macbook", "starlink", "battery"]):
             # Grounded catalog inquiry
             matched_prod = next(
@@ -241,14 +295,6 @@ class MockLLMAdapter(LLMProviderPort):
                 suggested_reply = (
                     f"Welcome to {merchant_name}! Here are our current verified options and pricing for {matched_prod}:"
                 )
-        elif any(w in msg_lower for w in ["when is my order", "when will my order", "where is my order", "order status", "track my order", "dispatch status", "rider where", "wetin happen to my order", "my order never reach", "where my delivery", "arrive"]):
-            intent = "ORDER_STATUS_INQUIRY"
-            lead_tier = "HOT"
-            urgency_score = 8
-            action = "RESOLVE_ORDER_STATUS"
-            suggested_reply = (
-                f"Checking your live order tracking status with {merchant_name}..."
-            )
         elif any(w in msg_lower for w in ["delivery", "shipping", "dispatch", "how long", "location", "where una dey", "operating hours", "open"]):
             intent = "LOGISTICS_OR_POLICY_INQUIRY"
             lead_tier = "WARM"

@@ -1,9 +1,10 @@
 """3-Stage Cascading Hybrid NLU Pipeline Domain Facade (ADR-0024, ADR-0039, ADR-0040)."""
 
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Sequence, Union
 from app.core.config import settings
-from app.contexts.ingress.schemas import NLUClassificationResponse
+from app.contexts.ingress.providers import CustomerHistorySliceProvider
+from app.contexts.ingress.schemas import NLUClassificationResponse, DialogueTurn
 from app.core.generation import (
     get_inference_engine,
     ExecutionPolicy,
@@ -25,7 +26,7 @@ class CascadingNLUPipeline:
         text: str,
         customer_phone: str = "+2348031234567",
         customer_name: str = "Tunde Adeleke",
-        previous_context: Optional[List[str]] = None,
+        previous_context: Optional[Sequence[Union[DialogueTurn, str]]] = None,
         merchant_name: str = "Enterprise SME Store",
         custom_dictionary: Optional[List[dict]] = None,
         catalog_manifest: Optional[str] = None,
@@ -78,10 +79,13 @@ class CascadingNLUPipeline:
                 token_estimate=50,
             )
         if previous_context:
-            slices["customer_history"] = ContextSlice(
-                slice_name="customer_history",
-                content=f"Customer Name: {customer_name}\nCustomer Phone: {customer_phone}\nRecent Turns:\n" + "\n".join(f"- {m}" for m in previous_context[-5:]),
-                token_estimate=len(previous_context) * 10,
+            slices["customer_history"] = await CustomerHistorySliceProvider().resolve(
+                merchant_id=None,
+                customer_phone=customer_phone,
+                options={
+                    "previous_context": previous_context,
+                    "customer_name": customer_name,
+                },
             )
 
         context = AggregatedContext(

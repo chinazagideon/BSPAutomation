@@ -344,7 +344,9 @@ class CentralInferenceEngine(InferenceEnginePort):
                 # Canonical intent & action boundaries (ADR-0044 Q8)
                 system_instruction = (
                     "You are an enterprise AI for Nigerian SME commerce conversational understanding.\n"
-                    "Analyze customer messages and return structured classification.\n"
+                    "Analyze ONLY the `Latest Customer Message` and return structured JSON classification.\n"
+                    "Use `Recent Dialogue History` strictly as background context to resolve references "
+                    "(e.g., 'my order', 'it', 'that') — NEVER classify an intent from an earlier turn.\n\n"
                     "Select the closest canonical intent from:\n"
                     "- INSTANT_CHECKOUT_ORDER (intent to buy or place an immediate order)\n"
                     "- PRICE_INQUIRY (asking for product pricing, rate card, or catalog)\n"
@@ -360,12 +362,24 @@ class CentralInferenceEngine(InferenceEnginePort):
                     "Constraints:\n"
                     "- lead_tier MUST be 'HOT', 'WARM', or 'COLD'.\n"
                     "- urgency_score MUST be an integer from 1 to 10.\n"
+                    "- confidence MUST be a float between 0.0 and 1.0.\n"
                     "- detected_dialect MUST be 'Nigerian Pidgin', 'Commercial Slang', or 'Standard English'.\n"
                     "- suggested_reply must be professional, warm, culturally attuned Nigerian commercial English or Pidgin.\n"
                     "- Answer ONLY from the merchant manifests provided below. NEVER invent delivery times, prices, "
                     "policies, or business facts. If the answer is not in the manifests, say what you can help with "
                     "and ask a clarifying question instead.\n"
-                    "- Use HUMAN_AGENT_HANDOFF ONLY when the customer explicitly asks for a human or agent."
+                    "- Use HUMAN_AGENT_HANDOFF ONLY when the customer explicitly asks for a human or agent.\n\n"
+                    "Required JSON Output Schema (return a single JSON object with these exact keys):\n"
+                    '{\n'
+                    '  "intent": "<canonical intent string>",\n'
+                    '  "lead_tier": "HOT" | "WARM" | "COLD",\n'
+                    '  "urgency_score": <int 1-10>,\n'
+                    '  "confidence": <float 0.0-1.0>,\n'
+                    '  "detected_dialect": "Nigerian Pidgin" | "Commercial Slang" | "Standard English",\n'
+                    '  "suggested_reply": "<string or null>",\n'
+                    '  "action": "<e.g. RESOLVE_ORDER_STATUS, SHOW_PRODUCT_CATALOG, NURTURE_OR_DEEP_RAG, DISPATCH_AGENT_HANDOFF>",\n'
+                    '  "extracted_entities": {"product": "<optional>", "order_reference": "<optional>"}\n'
+                    '}'
                 )
 
                 # Decouple context: persistent manifests in system_instruction, turns in prompt (ADR-0044 Q10)
@@ -392,6 +406,7 @@ class CentralInferenceEngine(InferenceEnginePort):
                 llm_res = await llm_adapter.generate_chat_completion(prompt, system_instruction)
                 latency = (time.perf_counter() - start_time) * 1000.0
 
+                entities_dict = llm_res.extracted_entities or {}
                 logger.info(
                     "stage_3_llm_dispatch_completed",
                     model=settings.GEMINI_MODEL,
@@ -400,6 +415,8 @@ class CentralInferenceEngine(InferenceEnginePort):
                     confidence=llm_res.confidence,
                     tokens_consumed=llm_res.tokens_consumed or 380,
                     latency_ms=round(latency, 2),
+                    error_fallback=bool(entities_dict.get("error_fallback")),
+                    fallback_reason=entities_dict.get("reason"),
                 )
                 logger.info(
                     "nlu_pipeline_stage_selected",

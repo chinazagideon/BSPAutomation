@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, desc
 
 from app.contexts.ingress.models import WebhookEvent, AIWallet, Conversation
-from app.contexts.ingress.schemas import NLUClassificationRequest, NLUClassificationResponse
+from app.contexts.ingress.schemas import NLUClassificationRequest, NLUClassificationResponse, DialogueTurn
 from app.contexts.ingress.pipeline import CascadingNLUPipeline
 from app.core.security import generate_pii_token
 
@@ -111,17 +111,24 @@ class IngressService:
         session: AsyncSession,
         conversation_id: UUID,
         limit: int = 5,
-    ) -> List[str]:
-        """Queries the latest sanitized message texts from ingress.messages for NLU context."""
+    ) -> List[DialogueTurn]:
+        """Queries the latest role-attributed message texts from ingress.messages for NLU context."""
         from app.contexts.ingress.models import Message
         query = await session.execute(
-            select(Message.sanitized_text)
+            select(Message.sender, Message.sanitized_text)
             .where(Message.conversation_id == conversation_id)
             .order_by(desc(Message.created_at))
             .limit(limit)
         )
-        records = query.scalars().all()
-        return list(reversed(records))
+        records = query.all()
+        return [
+            DialogueTurn(
+                role="customer" if sender == "user" else "assistant",
+                text=text or "",
+            )
+            for sender, text in reversed(records)
+            if text
+        ]
 
     @staticmethod
     async def get_cached_fast_path_dictionary(
@@ -226,22 +233,23 @@ class IngressService:
         }
 
     @staticmethod
-    async def classify_and_route(
-        session: AsyncSession,
+    async def build_grounding_manifests(
+        session: Optional[AsyncSession],
         merchant_id: UUID,
-        request: NLUClassificationRequest,
-    ) -> NLUClassificationResponse:
-        """
-        Processes an incoming customer message through the 3-Stage Cascading NLU Pipeline:
-        PII sanitization -> Stage 1 (Fast-Path) -> Stage 2 (Custom Model) -> Stage 3 (Gemini 3.7 Flash).
-        Pre-queries merchant FAQs/policies and persistent customer orders from PostgreSQL into dedicated slices.
-        """
+        customer_phone: Optional[str],
+    ) -> Dict[str, Any]:
+        """Pre-queries merchant FAQs/policies and recent customer orders into grounding slices."""
+        if not session:
+            return {
+                "faq_manifest": None,
+                "faq_data": [],
+                "customer_orders_manifest": None,
+                "customer_orders_data": [],
+            }
+
         from app.contexts.knowledge.services import KnowledgeService
         from app.core.generation.order_ledger import CustomerOrderLedger
 
-        sanitized_text = sanitize_pii_quick(request.message)
-
-        # Pre-query FAQs and persistent customer orders for grounded context
         faq_entries = await KnowledgeService.list_entries(
             session=session,
             merchant_id=merchant_id,
@@ -253,17 +261,46 @@ class IngressService:
         faq_manifest = "### Merchant Policies & FAQs:\n" + "\n".join(faq_manifest_lines) if faq_manifest_lines else None
         faq_data = [{"title": e.title, "content": e.content, "intent": (e.metadata_json or {}).get("intent")} for e in faq_items]
 
-        recent_orders = await CustomerOrderLedger.list_recent(
-            merchant_id=str(merchant_id),
-            customer_phone=request.customer_phone,
-            session=session,
+        recent_orders = (
+            await CustomerOrderLedger.list_recent(
+                merchant_id=str(merchant_id),
+                customer_phone=customer_phone,
+                session=session,
+            )
+            if customer_phone
+            else []
         )
         order_lines = [
-            f"- Order: {o.order_summary} | Destination: {o.delivery_zone or 'N/A'} | Total: ₦{o.total_kobo // 100:,} | Type: {o.fulfillment_type}"
+            f"- Order: {o.order_summary} | Status: {o.status} | Destination: {o.delivery_zone or 'N/A'} | Total: ₦{o.total_kobo // 100:,} | Type: {o.fulfillment_type}"
             for o in recent_orders
         ]
         orders_manifest = "### Customer's Recent Orders:\n" + "\n".join(order_lines) if order_lines else None
         orders_data = [o.model_dump() for o in recent_orders]
+
+        return {
+            "faq_manifest": faq_manifest,
+            "faq_data": faq_data,
+            "customer_orders_manifest": orders_manifest,
+            "customer_orders_data": orders_data,
+        }
+
+    @staticmethod
+    async def classify_and_route(
+        session: AsyncSession,
+        merchant_id: UUID,
+        request: NLUClassificationRequest,
+    ) -> NLUClassificationResponse:
+        """
+        Processes an incoming customer message through the 3-Stage Cascading NLU Pipeline:
+        PII sanitization -> Stage 1 (Fast-Path) -> Stage 2 (Custom Model) -> Stage 3 (Gemini 3.7 Flash).
+        Pre-queries merchant FAQs/policies and persistent customer orders from PostgreSQL into dedicated slices.
+        """
+        sanitized_text = sanitize_pii_quick(request.message)
+        manifests = await IngressService.build_grounding_manifests(
+            session=session,
+            merchant_id=merchant_id,
+            customer_phone=request.customer_phone,
+        )
 
         response = await CascadingNLUPipeline.process(
             text=sanitized_text,
@@ -271,10 +308,10 @@ class IngressService:
             customer_name=request.customer_name or "Valued SME Customer",
             previous_context=request.previous_context,
             policy=request.policy,
-            faq_manifest=faq_manifest,
-            customer_orders_manifest=orders_manifest,
-            faq_data=faq_data,
-            customer_orders_data=orders_data,
+            faq_manifest=manifests["faq_manifest"],
+            customer_orders_manifest=manifests["customer_orders_manifest"],
+            faq_data=manifests["faq_data"],
+            customer_orders_data=manifests["customer_orders_data"],
         )
 
         # Update AI Wallet metrics if merchant wallet exists

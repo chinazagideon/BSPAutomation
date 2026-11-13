@@ -199,6 +199,7 @@ INTENT_TRAINING_CORPUS: Dict[str, List[str]] = {
         "Wetin be the delivery time for my last order?",
         "Where is my order, how long again?",
         "How many days for delivery to Abuja?",
+        "When is my order going to arrive?"
     ],
     "TRUST_VERIFICATION_PROOF": [
         "Hope say no be scam o?",
@@ -209,6 +210,8 @@ INTENT_TRAINING_CORPUS: Dict[str, List[str]] = {
         "Proof dey? Make I see past work and customer reviews",
         "Send customer reviews make I sure say una legit",
         "Can I see past delivery proof?",
+        "can i trust you guys?",
+        "Are you guys trustworthy?",
     ],
     "REQUEST_PAYMENT_DETAILS": [
         "Send account details make I pay",

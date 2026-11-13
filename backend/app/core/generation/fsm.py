@@ -9,7 +9,7 @@ and stateless output translation (Function B):
 
 from enum import Enum
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 from uuid import UUID
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,7 @@ from app.adapters.base import (
 )
 from app.adapters.providers.open_weight import get_open_weight_adapter
 from app.contexts.ingress.pipeline import CascadingNLUPipeline
+from app.contexts.ingress.schemas import DialogueTurn
 from app.contexts.ingress.templates import synthesize_custom_model_reply
 from app.contexts.knowledge.services import KnowledgeService
 from app.core.generation.negotiation import (
@@ -351,6 +352,53 @@ class ConversationFSMService:
             strategy=ResponseStrategy.OUT_OF_STOCK_ALERT,
         )
 
+    @staticmethod
+    async def _run_cascading_nlu(
+        merchant_id: Union[UUID, str],
+        text: str,
+        customer_phone: str,
+        customer_name: str,
+        recent_history: Optional[Sequence[Union[DialogueTurn, str]]],
+        session: Optional[AsyncSession],
+        merchant_name: str,
+        custom_dictionary: Optional[List[Dict[str, Any]]],
+        catalog_manifest: Optional[str],
+        provider_context: Optional[Dict[str, Any]],
+    ):
+        """Invokes CascadingNLUPipeline.process with grounded FAQ and customer order manifests."""
+        manifests: Dict[str, Any] = {
+            "faq_manifest": None,
+            "faq_data": [],
+            "customer_orders_manifest": None,
+            "customer_orders_data": [],
+        }
+        if session is not None:
+            try:
+                from app.contexts.ingress.services import IngressService
+                m_uuid = merchant_id if isinstance(merchant_id, UUID) else UUID(str(merchant_id))
+                manifests = await IngressService.build_grounding_manifests(
+                    session=session,
+                    merchant_id=m_uuid,
+                    customer_phone=customer_phone,
+                )
+            except (ValueError, Exception):
+                pass
+
+        return await CascadingNLUPipeline.process(
+            text=text,
+            customer_phone=customer_phone,
+            customer_name=customer_name,
+            previous_context=recent_history,
+            merchant_name=merchant_name,
+            custom_dictionary=custom_dictionary,
+            catalog_manifest=catalog_manifest,
+            provider_context=provider_context,
+            faq_manifest=manifests["faq_manifest"],
+            customer_orders_manifest=manifests["customer_orders_manifest"],
+            faq_data=manifests["faq_data"],
+            customer_orders_data=manifests["customer_orders_data"],
+        )
+
     @classmethod
     async def process_turn(
         cls,
@@ -358,7 +406,7 @@ class ConversationFSMService:
         customer_phone: str,
         customer_name: str,
         sanitized_text: str,
-        recent_history: Optional[List[str]] = None,
+        recent_history: Optional[Sequence[Union[DialogueTurn, str]]] = None,
         session: Optional[AsyncSession] = None,
         merchant_name: str = "Enterprise SME Store",
         custom_dictionary: Optional[List[Dict[str, Any]]] = None,
@@ -708,11 +756,13 @@ class ConversationFSMService:
                     context_stack=[f.model_dump(mode="json") for f in stack.frames],
                 )
 
-        nlu_resp = await CascadingNLUPipeline.process(
+        nlu_resp = await cls._run_cascading_nlu(
+            merchant_id=merchant_id,
             text=sanitized_text,
             customer_phone=customer_phone,
             customer_name=customer_name,
-            previous_context=recent_history,
+            recent_history=recent_history,
+            session=session,
             merchant_name=merchant_name,
             custom_dictionary=custom_dictionary,
             catalog_manifest=catalog_manifest,
@@ -956,7 +1006,7 @@ class ConversationFSMService:
         customer_phone: str,
         customer_name: str,
         sanitized_text: str,
-        recent_history: Optional[List[str]],
+        recent_history: Optional[Sequence[Union[DialogueTurn, str]]],
         session: Optional[AsyncSession],
         merchant_name: str,
         custom_dictionary: Optional[List[Dict[str, Any]]],
@@ -990,6 +1040,7 @@ class ConversationFSMService:
 
         # Execute sub-flow query using Function A's parsed intent when high confidence
         if parsed.confidence >= 0.75 and parsed.intent in (
+            "ORDER_STATUS_INQUIRY",
             "DELIVERY_TIMELINE_INQUIRY",
             "TRUST_VERIFICATION_PROOF",
             "WHOLESALE_DISCOUNT_INQUIRY",
@@ -1003,7 +1054,7 @@ class ConversationFSMService:
 
             suggested = (
                 None
-                if parsed.intent in ("PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG")
+                if parsed.intent in ("PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG", "ORDER_STATUS_INQUIRY")
                 else (
                     "A human agent will be with you shortly."
                     if parsed.intent in ("HUMAN_AGENT_HANDOFF", "DISPATCH_AGENT_HANDOFF")
@@ -1018,7 +1069,11 @@ class ConversationFSMService:
             sub_action = (
                 "DISPATCH_AGENT_HANDOFF"
                 if parsed.intent in ("HUMAN_AGENT_HANDOFF", "DISPATCH_AGENT_HANDOFF")
-                else ("SHOW_PRODUCT_CATALOG" if parsed.intent in ("PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG") else "SUBFLOW_RESOLVED_WITH_RESUME")
+                else (
+                    "RESOLVE_ORDER_STATUS"
+                    if parsed.intent == "ORDER_STATUS_INQUIRY"
+                    else ("SHOW_PRODUCT_CATALOG" if parsed.intent in ("PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG") else "SUBFLOW_RESOLVED_WITH_RESUME")
+                )
             )
             nlu_resp = NLUClassificationResponse(
                 routing_source="CUSTOM_LOCAL_MODEL",
@@ -1035,11 +1090,13 @@ class ConversationFSMService:
                 estimated_kobo_saved=52000,
             )
         else:
-            nlu_resp = await CascadingNLUPipeline.process(
+            nlu_resp = await cls._run_cascading_nlu(
+                merchant_id=merchant_id,
                 text=sanitized_text,
                 customer_phone=customer_phone,
                 customer_name=customer_name,
-                previous_context=recent_history,
+                recent_history=recent_history,
+                session=session,
                 merchant_name=merchant_name,
                 custom_dictionary=custom_dictionary,
                 catalog_manifest=catalog_manifest,

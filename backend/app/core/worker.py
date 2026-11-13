@@ -402,11 +402,12 @@ async def _execute_webhook_processing(
             await session.commit()
 
             # Emit Agent Handoff Requested Event
+            from app.contexts.ingress.providers import format_dialogue_turn
             card_resp = DeskService.generate_synthesized_context(
                 ContextInjectionRequest(
                     customer_name=customer_name,
                     customer_phone=sender_phone,
-                    chat_history=recent_history + [f"[Voice Note: {media_id}]"],
+                    chat_history=[format_dialogue_turn(t) for t in recent_history] + [f"[Voice Note: {media_id}]"],
                 )
             )
             await event_bus.publish(
@@ -512,11 +513,12 @@ async def _execute_webhook_processing(
 
         # 8. Cross-Context Agent Desk Escalation (ADR-0036)
         if outcome.action in ("DISPATCH_AGENT_HANDOFF", "AGENT_HANDOFF"):
+            from app.contexts.ingress.providers import format_dialogue_turn
             card_resp = DeskService.generate_synthesized_context(
                 ContextInjectionRequest(
                     customer_name=customer_name,
                     customer_phone=sender_phone,
-                    chat_history=recent_history + [sanitized_text],
+                    chat_history=[format_dialogue_turn(t) for t in recent_history] + [sanitized_text],
                 )
             )
             await event_bus.publish(
