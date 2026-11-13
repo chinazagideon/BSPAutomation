@@ -382,11 +382,14 @@ class CentralInferenceEngine(InferenceEnginePort):
                     '}'
                 )
 
+                from app.contexts.compliance.services import sanitize_text_for_llm
+
                 # Decouple context: persistent manifests in system_instruction, turns in prompt (ADR-0044 Q10)
-                prompt = f"Customer Message: {text}"
+                scrubbed_text = sanitize_text_for_llm(text)
+                prompt = f"Customer Message: {scrubbed_text}"
                 if context:
                     persistent_slices = [
-                        f"### {name.replace('_', ' ').title()}:\n{s.content}"
+                        f"### {name.replace('_', ' ').title()}:\n{sanitize_text_for_llm(s.content)}"
                         for name, s in context.slices.items()
                         if name != "customer_history" and s.content.strip()
                     ]
@@ -394,14 +397,17 @@ class CentralInferenceEngine(InferenceEnginePort):
                         system_instruction += "\n\n" + "\n\n".join(persistent_slices)
 
                     if "customer_history" in context.slices and context.slices["customer_history"].content.strip():
-                        history_content = context.slices["customer_history"].content.strip()
-                        prompt = f"Recent Dialogue History:\n{history_content}\n\nLatest Customer Message: {text}"
+                        history_content = sanitize_text_for_llm(
+                            context.slices["customer_history"].content.strip()
+                        )
+                        prompt = f"Recent Dialogue History:\n{history_content}\n\nLatest Customer Message: {scrubbed_text}"
 
                 logger.info(
                     "stage_3_llm_dispatch_started",
                     model=settings.GEMINI_MODEL,
-                    text_length=len(text),
-                    prompt=prompt
+                    text_length=len(scrubbed_text),
+                    prompt_length=len(prompt),
+                    prompt=prompt,
                 )
                 llm_res = await llm_adapter.generate_chat_completion(prompt, system_instruction)
                 latency = (time.perf_counter() - start_time) * 1000.0

@@ -198,3 +198,71 @@ async def test_fsm_forwards_grounding_manifests_to_cascading_nlu(monkeypatch):
     assert captured["customer_orders_manifest"] == "### Customer's Recent Orders:\n- Order: 1x Mama Gold Rice 25kg"
     assert captured["faq_manifest"] == "### Merchant Policies & FAQs:\n- Delivery SLA: 24h"
     assert len(captured["customer_orders_data"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_stage3_prompt_minimizes_identity_and_scrubs_pii(monkeypatch):
+    """Stage 3 prompt omits phone/surname and scrubs phones, emails, and NUBANs before LLM dispatch."""
+    from app.contexts.ingress.providers import CustomerHistorySliceProvider
+    from app.contexts.ingress.schemas import DialogueTurn
+    from app.core.generation.context import AggregatedContext
+    from app.core.generation.engine import get_inference_engine
+    from app.core.generation.ports import ExecutionPolicy, TaskPriority
+    from app.adapters.base import ClassificationOutput
+    from app.core import generation as gen_pkg  # noqa: F401
+    import app.core.generation.engine as engine_mod
+
+    history_slice = await CustomerHistorySliceProvider().resolve(
+        merchant_id=None,
+        customer_phone="+2348031234567",
+        options={
+            "customer_name": "Tunde Adeleke",
+            "previous_context": [
+                DialogueTurn(role="customer", text="My account number is 0123456789 and email tunde@example.com"),
+            ],
+        },
+    )
+    assert "2348031234567" not in history_slice.content
+    assert "Adeleke" not in history_slice.content
+    assert "Customer First Name: Tunde" in history_slice.content
+
+    captured = {}
+
+    class SpyAdapter:
+        async def generate_chat_completion(self, prompt: str, system_instruction: str) -> ClassificationOutput:
+            captured["prompt"] = prompt
+            captured["system_instruction"] = system_instruction
+            return ClassificationOutput(
+                intent="GENERAL_INQUIRY",
+                lead_tier="WARM",
+                urgency_score=5,
+                confidence=0.9,
+                detected_dialect="Standard English",
+                suggested_reply="We are checking this for you.",
+                action="NURTURE_OR_DEEP_RAG",
+            )
+
+    monkeypatch.setattr(engine_mod, "get_llm_provider_adapter", lambda: SpyAdapter())
+    original_llm_state = settings.USE_LLM_ESCALATION
+    try:
+        settings.USE_LLM_ESCALATION = True
+        engine = get_inference_engine()
+        await engine.classify(
+            text="Call me on 08031234567 about my order",
+            context=AggregatedContext(
+                customer_phone="+2348031234567",
+                slices={"customer_history": history_slice},
+            ),
+            policy=ExecutionPolicy.DEEP_REASONING,
+            task_priority=TaskPriority.CUSTOMER_FACING,
+        )
+    finally:
+        settings.USE_LLM_ESCALATION = original_llm_state
+
+    sent_prompt = captured["prompt"]
+    assert "08031234567" not in sent_prompt
+    assert "0123456789" not in sent_prompt
+    assert "tunde@example.com" not in sent_prompt
+    assert "[REDACTED_PHONE_4567]" in sent_prompt
+    assert "[REDACTED_NUBAN_6789]" in sent_prompt
+    assert "[REDACTED_EMAIL]" in sent_prompt

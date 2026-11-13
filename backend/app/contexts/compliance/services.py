@@ -69,6 +69,23 @@ def sanitize_nigerian_pii_detailed(text: str) -> Tuple[str, List[RedactedEntity]
     return sanitized, redacted
 
 
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_NG_PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?234|0)(?:70|80|81|90|91)\d{8}(?!\d)")
+
+
+def sanitize_text_for_llm(text: str) -> str:
+    """Scrubs Nigerian financial IDs, phone numbers, and emails before external LLM dispatch."""
+    if not text:
+        return ""
+    sanitized, _ = sanitize_nigerian_pii_detailed(text)
+    sanitized = _EMAIL_PATTERN.sub("[REDACTED_EMAIL]", sanitized)
+    sanitized = _NG_PHONE_PATTERN.sub(
+        lambda m: f"[REDACTED_PHONE_{m.group(0)[-4:]}]",
+        sanitized,
+    )
+    return sanitized
+
+
 class ComplianceService:
     @staticmethod
     def sanitize_text(request: PiiSanitizeRequest) -> PiiSanitizeResponse:
