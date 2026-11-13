@@ -64,7 +64,7 @@ async def test_state_controller_disable_custom_model():
 
 @pytest.mark.asyncio
 async def test_state_controller_disable_llm_escalation():
-    """Verifies that setting USE_LLM_ESCALATION=False falls back to human desk handoff gracefully without crashing."""
+    """With LLM + Stage 2 disabled, unresolved queries get a help menu (NOT an agent handoff)."""
     original_llm_state = settings.USE_LLM_ESCALATION
     original_custom_state = settings.USE_CUSTOM_MODEL
     try:
@@ -74,8 +74,27 @@ async def test_state_controller_disable_llm_escalation():
         result = await CascadingNLUPipeline.process(text)
 
         assert result.routing_source == "FALLBACK_DESK_HANDOFF"
-        assert result.action == "DISPATCH_AGENT_HANDOFF"
+        assert result.action == "SHOW_HELP_MENU"
         assert result.tokens_consumed == 0
     finally:
         settings.USE_LLM_ESCALATION = original_llm_state
         settings.USE_CUSTOM_MODEL = original_custom_state
+
+
+@pytest.mark.asyncio
+async def test_unresolved_explicit_human_request_still_hands_off():
+    """Agent handoff remains available as the last resort when the customer explicitly asks for a person."""
+    original_llm_state = settings.USE_LLM_ESCALATION
+    original_custom_state = settings.USE_CUSTOM_MODEL
+    original_fast_state = settings.USE_FAST_PATH
+    try:
+        settings.USE_LLM_ESCALATION = False
+        settings.USE_CUSTOM_MODEL = False
+        settings.USE_FAST_PATH = False
+        result = await CascadingNLUPipeline.process("I want to speak to human agent")
+
+        assert result.action == "DISPATCH_AGENT_HANDOFF"
+    finally:
+        settings.USE_LLM_ESCALATION = original_llm_state
+        settings.USE_CUSTOM_MODEL = original_custom_state
+        settings.USE_FAST_PATH = original_fast_state

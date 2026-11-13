@@ -6,6 +6,7 @@ Functional translation from ResponseStrategy to channel-compliant Meta WhatsApp 
 - Contextual Text / Catalog Miss Alerts
 """
 
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
@@ -165,5 +166,154 @@ class ResponseFormatter:
             to_phone=to_phone,
             body_text=body_text,
             buttons=buttons[:3],
+            strategy=strategy,
+        )
+
+    @staticmethod
+    def format_unresolved_disambiguation(
+        to_phone: str,
+        has_active_cart: bool = False,
+        cart_summary: Optional[str] = None,
+        merchant_name: str = "Enterprise SME Store",
+    ) -> EgressPayloadEnvelope:
+        """Formats 3-button neutral disambiguation menu (ADR-0048)."""
+        if has_active_cart:
+            cart_text = f"We notice you have a pending order for *{cart_summary or 'items'}*.\n\n"
+            body = (
+                f"{cart_text}How would you like to proceed with {merchant_name}?"
+            )
+            buttons = [
+                {"id": "NAV:RESUME_CART", "title": "Resume Order"},
+                {"id": "NAV:TRACK_ORDER", "title": "Track Order"},
+                {"id": "NAV:AGENT_HANDOFF", "title": "Speak to Agent"},
+            ]
+        else:
+            body = f"Welcome to {merchant_name}! How can we best help you today?"
+            buttons = [
+                {"id": "NAV:BROWSE_CATALOG", "title": "Browse Catalog"},
+                {"id": "NAV:TRACK_ORDER", "title": "Track Order"},
+                {"id": "NAV:AGENT_HANDOFF", "title": "Speak to Agent"},
+            ]
+
+        return EgressPayloadEnvelope(
+            message_type=EgressMessageType.INTERACTIVE_BUTTONS,
+            to_phone=to_phone,
+            body_text=body,
+            buttons=buttons,
+            strategy=ResponseStrategy.UNRESOLVED_DISAMBIGUATION,
+            metadata={"has_active_cart": has_active_cart},
+        )
+
+    @staticmethod
+    def format_order_status_card(
+        to_phone: str,
+        order: Optional[Any] = None,
+        multiple_orders: Optional[List[Any]] = None,
+        merchant_name: str = "Enterprise SME Store",
+    ) -> EgressPayloadEnvelope:
+        """Formats post-purchase order tracking update (ADR-0048)."""
+        if multiple_orders and len(multiple_orders) > 1:
+            rows = []
+            for ord_item in multiple_orders[:10]:
+                created_str = (
+                    datetime.fromtimestamp(ord_item.created_at).strftime("%d %b")
+                    if getattr(ord_item, "created_at", None)
+                    else "Recent"
+                )
+                zone = getattr(ord_item, "delivery_zone", None) or "Direct"
+                ord_id = str(getattr(ord_item, "id", "") or "")
+                rows.append({
+                    "id": f"ORDER_SELECT:{ord_id}",
+                    "title": f"Order #{ord_id[:8]}",
+                    "description": f"{ord_item.order_summary[:40]} • {created_str} • {zone}"[:72],
+                })
+            sections = [{"title": "Recent Orders", "rows": rows}]
+            return EgressPayloadEnvelope(
+                message_type=EgressMessageType.INTERACTIVE_LIST,
+                to_phone=to_phone,
+                header_text=f"Select an Order ({len(multiple_orders)} found)"[:60],
+                body_text="Tap an order below to check its live dispatch and arrival status:",
+                button_title="View Orders"[:20],
+                sections=sections,
+                strategy=ResponseStrategy.ORDER_STATUS_CARD,
+                metadata={"order_count": len(multiple_orders)},
+            )
+
+        if not order:
+            body = (
+                f"We couldn't find any recent orders associated with your WhatsApp number for {merchant_name}.\n\n"
+                f"If you placed your order under another phone number, please reply with your *Order Reference ID* (e.g. #1042) or connect with a support agent below."
+            )
+            buttons = [
+                {"id": "NAV:BROWSE_CATALOG", "title": "Browse Catalog"},
+                {"id": "NAV:AGENT_HANDOFF", "title": "Speak to Agent"},
+            ]
+            return EgressPayloadEnvelope(
+                message_type=EgressMessageType.INTERACTIVE_BUTTONS,
+                to_phone=to_phone,
+                body_text=body,
+                buttons=buttons,
+                strategy=ResponseStrategy.ORDER_STATUS_CARD,
+                metadata={"found": False},
+            )
+
+        ord_id = str(getattr(order, "id", "") or "")
+        short_id = f" (#{ord_id[:8]})" if ord_id else ""
+        zone_info = f"Destination: *{order.delivery_zone}*\n" if getattr(order, "delivery_zone", None) else ""
+        total_naira = f"₦{order.total_kobo // 100:,}" if getattr(order, "total_kobo", 0) else "Confirmed"
+        created_dt = (
+            datetime.fromtimestamp(order.created_at).strftime("%d %b %Y, %I:%M %p")
+            if getattr(order, "created_at", None)
+            else "Today"
+        )
+
+        body = (
+            f"📦 *Order Status Update{short_id}*\n"
+            f"Status: *Dispatched / In Transit* 🚚\n"
+            f"Item: *{order.order_summary}*\n"
+            f"{zone_info}"
+            f"Amount: *{total_naira}*\n"
+            f"Ordered: {created_dt}\n\n"
+            f"Your order is on the way! Our dispatch rider will contact your WhatsApp line upon arrival."
+        )
+        buttons = [
+            {"id": "NAV:BROWSE_CATALOG", "title": "Browse Catalog"},
+            {"id": "NAV:AGENT_HANDOFF", "title": "Speak to Agent"},
+        ]
+        return EgressPayloadEnvelope(
+            message_type=EgressMessageType.INTERACTIVE_BUTTONS,
+            to_phone=to_phone,
+            body_text=body,
+            buttons=buttons,
+            strategy=ResponseStrategy.ORDER_STATUS_CARD,
+            metadata={"order_id": ord_id, "found": True},
+        )
+
+    @staticmethod
+    def format_compound_response(
+        to_phone: str,
+        answer_text: str,
+        resumption_prompt: str,
+        buttons: Optional[List[Dict[str, str]]] = None,
+        strategy: ResponseStrategy = ResponseStrategy.SLOT_CLARIFICATION,
+    ) -> EgressPayloadEnvelope:
+        """Formats compound response: Part 1 (Answer) + Part 2 (Cart resumption prompt) (ADR-0048)."""
+        body = (
+            f"{answer_text.strip()}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{resumption_prompt.strip()}"
+        )
+        if buttons:
+            return EgressPayloadEnvelope(
+                message_type=EgressMessageType.INTERACTIVE_BUTTONS,
+                to_phone=to_phone,
+                body_text=body,
+                buttons=buttons[:3],
+                strategy=strategy,
+            )
+        return EgressPayloadEnvelope(
+            message_type=EgressMessageType.TEXT,
+            to_phone=to_phone,
+            body_text=body,
             strategy=strategy,
         )

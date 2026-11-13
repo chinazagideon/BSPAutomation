@@ -93,6 +93,7 @@ CanonicalIntentType = Literal[
     "SHOW_PRODUCT_CATALOG",
     "WHOLESALE_DISCOUNT_INQUIRY",
     "DELIVERY_TIMELINE_INQUIRY",
+    "ORDER_STATUS_INQUIRY",
     "RESERVE_APPOINTMENT",
     "CONFIRM_PAYMENT",
     "REQUEST_PAYMENT_DETAILS",
@@ -113,6 +114,7 @@ CANONICAL_INTENT_VALUES = {
     "SHOW_PRODUCT_CATALOG",
     "WHOLESALE_DISCOUNT_INQUIRY",
     "DELIVERY_TIMELINE_INQUIRY",
+    "ORDER_STATUS_INQUIRY",
     "RESERVE_APPOINTMENT",
     "CONFIRM_PAYMENT",
     "REQUEST_PAYMENT_DETAILS",
@@ -132,6 +134,8 @@ def _coerce_canonical_intent(val: Any) -> str:
     norm = _coerce_intent(val)
     if norm in CANONICAL_INTENT_VALUES:
         return norm
+    if "TRACK" in norm or "STATUS" in norm or "ORDER_STATUS" in norm:
+        return "ORDER_STATUS_INQUIRY"
     if "BUY" in norm or "ORDER" in norm or "CHECKOUT" in norm:
         return "INSTANT_CHECKOUT_ORDER"
     if "PRICE" in norm or "COST" in norm or "CATALOG" in norm or "STOCK" in norm:
@@ -294,8 +298,18 @@ class CommandTapAction(BaseModel):
     raw_id: str
 
 
+class NavAction(BaseModel):
+    action_kind: Literal["NAV"] = "NAV"
+    target: Literal["BROWSE_CATALOG", "RESUME_CART", "TRACK_ORDER", "AGENT_HANDOFF"]
+
+
+class OrderSelectAction(BaseModel):
+    action_kind: Literal["ORDER_SELECT"] = "ORDER_SELECT"
+    order_id: str
+
+
 InteractiveActionUnion = Annotated[
-    Union[ProductTapAction, SlotBindAction, CommandTapAction],
+    Union[ProductTapAction, SlotBindAction, CommandTapAction, NavAction, OrderSelectAction],
     Field(discriminator="action_kind"),
 ]
 
@@ -331,6 +345,12 @@ class InteractiveProtocolEnvelope(BaseModel):
                         "slot_value": slot_val,
                     }
                 }
+        if raw.startswith("NAV:"):
+            target = raw.split(":", 1)[1].strip()
+            return {"event": {"action_kind": "NAV", "target": target}}
+        if raw.startswith("ORDER_SELECT:"):
+            target = raw.split(":", 1)[1].strip()
+            return {"event": {"action_kind": "ORDER_SELECT", "order_id": target}}
         if raw in ("SHOW_CATALOG", "BROWSE_CATALOG", "INTENT:SHOW_CATALOG"):
             return {"event": {"action_kind": "COMMAND_TAP", "command": "SHOW_CATALOG", "raw_id": raw}}
         if raw in ("AGENT_HANDOFF", "SPEAK_TO_AGENT", "INTENT:AGENT_HANDOFF"):

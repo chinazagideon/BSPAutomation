@@ -234,8 +234,36 @@ class IngressService:
         """
         Processes an incoming customer message through the 3-Stage Cascading NLU Pipeline:
         PII sanitization -> Stage 1 (Fast-Path) -> Stage 2 (Custom Model) -> Stage 3 (Gemini 3.7 Flash).
+        Pre-queries merchant FAQs/policies and persistent customer orders from PostgreSQL into dedicated slices.
         """
+        from app.contexts.knowledge.services import KnowledgeService
+        from app.core.generation.order_ledger import CustomerOrderLedger
+
         sanitized_text = sanitize_pii_quick(request.message)
+
+        # Pre-query FAQs and persistent customer orders for grounded context
+        faq_entries = await KnowledgeService.list_entries(
+            session=session,
+            merchant_id=merchant_id,
+            entry_type=None,
+            include_global=True,
+        )
+        faq_items = [e for e in faq_entries if e.entry_type in ("FAQ", "POLICY")]
+        faq_manifest_lines = [f"- **{e.title}**: {e.content}" for e in faq_items]
+        faq_manifest = "### Merchant Policies & FAQs:\n" + "\n".join(faq_manifest_lines) if faq_manifest_lines else None
+        faq_data = [{"title": e.title, "content": e.content, "intent": (e.metadata_json or {}).get("intent")} for e in faq_items]
+
+        recent_orders = await CustomerOrderLedger.list_recent(
+            merchant_id=str(merchant_id),
+            customer_phone=request.customer_phone,
+            session=session,
+        )
+        order_lines = [
+            f"- Order: {o.order_summary} | Destination: {o.delivery_zone or 'N/A'} | Total: ₦{o.total_kobo // 100:,} | Type: {o.fulfillment_type}"
+            for o in recent_orders
+        ]
+        orders_manifest = "### Customer's Recent Orders:\n" + "\n".join(order_lines) if order_lines else None
+        orders_data = [o.model_dump() for o in recent_orders]
 
         response = await CascadingNLUPipeline.process(
             text=sanitized_text,
@@ -243,6 +271,10 @@ class IngressService:
             customer_name=request.customer_name or "Valued SME Customer",
             previous_context=request.previous_context,
             policy=request.policy,
+            faq_manifest=faq_manifest,
+            customer_orders_manifest=orders_manifest,
+            faq_data=faq_data,
+            customer_orders_data=orders_data,
         )
 
         # Update AI Wallet metrics if merchant wallet exists

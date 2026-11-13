@@ -12,8 +12,9 @@ from sqlalchemy import (
     ForeignKey,
     CHAR,
     Text,
+    Index,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -119,3 +120,35 @@ class JournalPosting(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     journal_entry = relationship("JournalEntry", back_populates="postings")
+
+
+class CustomerOrder(Base):
+    """
+    Persistent record of a customer's converged checkout order.
+    Decoupled from the transient LIFO ContextStack so logistics and status queries
+    can resolve against a customer's real purchase history.
+    """
+    __tablename__ = "customer_orders"
+    __table_args__ = (
+        Index("idx_customer_orders_lookup", "merchant_id", "customer_phone", "created_at"),
+        Index("idx_customer_orders_cart_id", "cart_id"),
+        {"schema": "ledger"},
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    merchant_id = Column(UUID(as_uuid=True), ForeignKey("core.merchants.id", ondelete="CASCADE"), nullable=False)
+    cart_id = Column(UUID(as_uuid=True), ForeignKey("ledger.checkout_carts.id", ondelete="SET NULL"), nullable=True)
+    customer_phone = Column(String(32), nullable=False)
+    order_summary = Column(Text, nullable=False)
+    delivery_zone = Column(String(128), nullable=True)
+    fulfillment_type = Column(String(64), nullable=False, default="EXPRESS_DELIVERY")
+    total_kobo = Column(BigInteger, nullable=False, default=0)
+    metadata_json = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+

@@ -241,6 +241,14 @@ class MockLLMAdapter(LLMProviderPort):
                 suggested_reply = (
                     f"Welcome to {merchant_name}! Here are our current verified options and pricing for {matched_prod}:"
                 )
+        elif any(w in msg_lower for w in ["when is my order", "when will my order", "where is my order", "order status", "track my order", "dispatch status", "rider where", "wetin happen to my order", "my order never reach", "where my delivery", "arrive"]):
+            intent = "ORDER_STATUS_INQUIRY"
+            lead_tier = "HOT"
+            urgency_score = 8
+            action = "RESOLVE_ORDER_STATUS"
+            suggested_reply = (
+                f"Checking your live order tracking status with {merchant_name}..."
+            )
         elif any(w in msg_lower for w in ["delivery", "shipping", "dispatch", "how long", "location", "where una dey", "operating hours", "open"]):
             intent = "LOGISTICS_OR_POLICY_INQUIRY"
             lead_tier = "WARM"

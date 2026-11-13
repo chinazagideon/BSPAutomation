@@ -22,6 +22,9 @@ from app.contexts.knowledge.seed_data import (
     ALABA_AGRO_OFFERINGS,
     LEKKI_GLOW_OFFERINGS,
     HORIZON_TECH_OFFERINGS,
+    ALABA_AGRO_FAQS,
+    LEKKI_GLOW_FAQS,
+    HORIZON_TECH_FAQS,
 )
 
 logger = structlog.get_logger(__name__)
@@ -163,6 +166,43 @@ class CatalogSeeder:
         return seeded_entries
 
     @classmethod
+    async def seed_merchant_faqs(
+        cls,
+        session: AsyncSession,
+        merchant_id: UUID,
+        faqs: List[Dict[str, Any]],
+    ) -> List[KnowledgeEntry]:
+        """Idempotently seeds intent-tagged FAQ / POLICY entries (grounding source for FAQ resolution)."""
+        seeded: List[KnowledgeEntry] = []
+        for item in faqs:
+            metadata = {"intent": item["intent"], "faq_key": item["faq_key"]}
+            stmt = select(KnowledgeEntry).where(
+                KnowledgeEntry.merchant_id == merchant_id,
+                KnowledgeEntry.entry_type == item["entry_type"],
+                KnowledgeEntry.metadata_json.op("->>")("faq_key") == item["faq_key"],
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing:
+                existing.title = item["title"]
+                existing.content = item["content"]
+                existing.metadata_json = metadata
+                existing.is_active = True
+                seeded.append(existing)
+                continue
+            entry = KnowledgeEntry(
+                merchant_id=merchant_id,
+                entry_type=item["entry_type"],
+                title=item["title"],
+                content=item["content"],
+                metadata_json=metadata,
+                is_active=True,
+            )
+            session.add(entry)
+            seeded.append(entry)
+        await session.flush()
+        return seeded
+
+    @classmethod
     async def warm_redis_manifests(
         cls,
         session: AsyncSession,
@@ -197,6 +237,11 @@ class CatalogSeeder:
             "lekki-glow": (LEKKI_GLOW_MERCHANT_ID, LEKKI_GLOW_OFFERINGS),
             "horizon-tech": (HORIZON_TECH_MERCHANT_ID, HORIZON_TECH_OFFERINGS),
         }
+        faq_mapping = {
+            "alaba-agro": ALABA_AGRO_FAQS,
+            "lekki-glow": LEKKI_GLOW_FAQS,
+            "horizon-tech": HORIZON_TECH_FAQS,
+        }
 
         total_seeded = 0
         warmed_merchants: List[UUID] = []
@@ -215,6 +260,7 @@ class CatalogSeeder:
                 reset=reset,
             )
             total_seeded += len(entries)
+            await cls.seed_merchant_faqs(session, target_id, faq_mapping.get(slug, []))
             warmed_merchants.append(target_id)
 
         # Pre-warm Redis manifests

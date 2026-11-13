@@ -18,6 +18,8 @@ class ResponseStrategy(str, Enum):
     RESERVE_APPOINTMENT = "RESERVE_APPOINTMENT"
     AGENT_HANDOFF = "AGENT_HANDOFF"
     STANDARD_TEXT = "STANDARD_TEXT"
+    UNRESOLVED_DISAMBIGUATION = "UNRESOLVED_DISAMBIGUATION"
+    ORDER_STATUS_CARD = "ORDER_STATUS_CARD"
 
 
 class ResponseClassifier:
@@ -32,13 +34,24 @@ class ResponseClassifier:
     ) -> ResponseStrategy:
         norm_intent = (intent or "").strip().upper()
 
+        if norm_intent in ["ORDER_STATUS_INQUIRY", "RESOLVE_ORDER_STATUS"]:
+            return ResponseStrategy.ORDER_STATUS_CARD
+
         has_product_entity = bool(
             entities.get("product")
             or entities.get("category")
             or entities.get("product_name")
         )
 
-        if norm_intent in ["PRICE_INQUIRY", "SHOW_PRODUCT_CATALOG", "BROWSE_CATALOG", "STOCK_AVAILABILITY_INQUIRY"] or (has_product_entity and catalog_count > 0):
+        is_explicit_catalog_intent = norm_intent in [
+            "PRICE_INQUIRY",
+            "SHOW_PRODUCT_CATALOG",
+            "BROWSE_CATALOG",
+            "STOCK_AVAILABILITY_INQUIRY",
+        ]
+        is_commercial_intent = is_explicit_catalog_intent or norm_intent == "INSTANT_CHECKOUT_ORDER"
+
+        if is_explicit_catalog_intent or (has_product_entity and is_commercial_intent and catalog_count > 0):
             if catalog_count == 0 and has_product_entity:
                 return ResponseStrategy.CATALOG_MISS_ALERT
             if catalog_count == 1:
@@ -57,5 +70,8 @@ class ResponseClassifier:
 
         if norm_intent == "RESERVE_APPOINTMENT":
             return ResponseStrategy.RESERVE_APPOINTMENT
+
+        if norm_intent in ["UNRESOLVED_GENERAL_QUERY", "UNRESOLVED_DISAMBIGUATION", "GENERAL_INQUIRY", "SHOW_HELP_MENU"]:
+            return ResponseStrategy.UNRESOLVED_DISAMBIGUATION
 
         return ResponseStrategy.STANDARD_TEXT

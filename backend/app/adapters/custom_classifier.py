@@ -83,7 +83,15 @@ class MockCustomClassifierAdapter(CustomClassifierPort):
             confidence = 0.91
             action = "APPLY_BULK_DISCOUNT_TIER"
 
-        # 2. Logistics & Delivery Timeline (Lagos/Abuja traffic & interstate dispatch)
+        # 2a. Post-Purchase Order Status & Delivery Tracking (ADR-0048)
+        elif any(w in lower for w in ["when is my order", "when will my order", "where is my order", "order status", "track my order", "dispatch status", "rider where", "wetin happen to my order", "my order never reach", "where my delivery", "arrive"]):
+            intent = "ORDER_STATUS_INQUIRY"
+            lead_tier = "HOT"
+            urgency_score = 8
+            confidence = 0.94
+            action = "RESOLVE_ORDER_STATUS"
+
+        # 2b. Logistics & Delivery Timeline (Pre-purchase SLA & interstate dispatch)
         elif any(w in lower for w in ["when e go land", "delivery timeline", "dispatch rider", "interstate waybill", "how many days"]):
             intent = "DELIVERY_TIMELINE_INQUIRY"
             lead_tier = "WARM"
@@ -236,6 +244,10 @@ class ONNXClassifierAdapter(CustomClassifierPort):
             elif intent == "TRUST_VERIFICATION_PROOF":
                 action = "INJECT_SOCIAL_PROOF_PDF"
                 urgency_score = 7
+            elif intent == "ORDER_STATUS_INQUIRY":
+                action = "RESOLVE_ORDER_STATUS"
+                urgency_score = 8
+                lead_tier = "HOT"
             elif intent == "DELIVERY_TIMELINE_INQUIRY":
                 action = "CALCULATE_DISPATCH_ETA"
                 urgency_score = 7
@@ -309,7 +321,57 @@ class SpacyClassifierAdapter(CustomClassifierPort):
         )
 
 
+class OpenWeightClassifierAdapter(CustomClassifierPort):
+    """
+    Stage 2 Local Model backed by the stateless Open-Weight adapter (Function A).
+
+    Function A runs the trained spaCy `textcat` first and escalates to the configured
+    open-weight model (vLLM / Ollama / TGI, grammar-constrained JSON) when spaCy confidence is low;
+    the sandbox simulator is the offline fallback. No keyword/regex matching happens here, so
+    paraphrases ("how long is the delivery?", "when will my rider reach me?") classify by meaning.
+    """
+
+    _ACTION_MAP: Dict[str, str] = {
+        "WHOLESALE_DISCOUNT_INQUIRY": "APPLY_BULK_DISCOUNT_TIER",
+        "DELIVERY_TIMELINE_INQUIRY": "RESOLVE_FROM_KNOWLEDGE_BASE",
+        "TRUST_VERIFICATION_PROOF": "RESOLVE_FROM_KNOWLEDGE_BASE",
+        "REQUEST_PAYMENT_DETAILS": "GENERATE_VIRTUAL_NUBAN_HOLD",
+    }
+
+    async def classify(self, text: str) -> ClassificationOutput:
+        from app.adapters.providers.open_weight import get_open_weight_adapter
+        from app.adapters.providers.spacy_nlu_engine import STAGE_2_CUSTOM_MODEL_INTENTS
+
+        parsed = await get_open_weight_adapter().parse_input(text=text)
+
+        if parsed.intent in STAGE_2_CUSTOM_MODEL_INTENTS:
+            return ClassificationOutput(
+                intent=parsed.intent,
+                lead_tier=parsed.lead_tier,
+                urgency_score=parsed.urgency_score,
+                confidence=parsed.confidence,
+                detected_dialect=parsed.detected_dialect,
+                action=self._ACTION_MAP.get(parsed.intent),
+                extracted_entities=parsed.slots,
+                tokens_consumed=parsed.tokens_consumed,
+                latency_ms=max(2.0, parsed.latency_ms),
+            )
+
+        return ClassificationOutput(
+            intent="GENERAL_INQUIRY",
+            lead_tier="WARM",
+            urgency_score=6,
+            confidence=min(0.65, parsed.confidence),
+            detected_dialect=parsed.detected_dialect,
+            action=None,
+            extracted_entities=parsed.slots,
+            tokens_consumed=parsed.tokens_consumed,
+            latency_ms=max(2.0, parsed.latency_ms),
+        )
+
+
 CUSTOM_CLASSIFIER_REGISTRY: Dict[str, Callable[[], CustomClassifierPort]] = {
+    "open_weight": lambda: OpenWeightClassifierAdapter(),
     "spacy": lambda: SpacyClassifierAdapter(),
     "onnx": lambda: ONNXClassifierAdapter(settings.CUSTOM_MODEL_PATH),
     "mock": lambda: MockCustomClassifierAdapter(),
@@ -319,6 +381,6 @@ CUSTOM_CLASSIFIER_REGISTRY: Dict[str, Callable[[], CustomClassifierPort]] = {
 
 def get_custom_classifier_adapter(model_type: Optional[str] = None) -> CustomClassifierPort:
     """Resolves CustomClassifierPort via declarative registry map."""
-    slug = (model_type or settings.CUSTOM_MODEL_TYPE or "spacy").strip().lower()
-    builder = CUSTOM_CLASSIFIER_REGISTRY.get(slug, lambda: SpacyClassifierAdapter())
+    slug = (model_type or settings.CUSTOM_MODEL_TYPE or "open_weight").strip().lower()
+    builder = CUSTOM_CLASSIFIER_REGISTRY.get(slug, lambda: OpenWeightClassifierAdapter())
     return builder()

@@ -289,3 +289,53 @@ HORIZON_TECH_OFFERINGS: List[Dict[str, Any]] = [
         "stock_quantity": 25,
     },
 ]
+
+
+# -----------------------------------------------------------------------------
+# 4. MERCHANT FAQ / POLICY KNOWLEDGE (grounding source for Stage 2 / Stage 3 FAQ resolution)
+#    `intent` metadata ties each entry to a canonical NLU intent. No entry => query is
+#    "ungrounded" and must escalate (never answered from hardcoded templates fast-path).
+# -----------------------------------------------------------------------------
+ALABA_AGRO_FAQS: List[Dict[str, Any]] = [
+    {
+        "faq_key": "DELIVERY_TIMELINE_LAGOS",
+        "entry_type": "POLICY",
+        "intent": "DELIVERY_TIMELINE_INQUIRY",
+        "title": "Delivery timelines",
+        "content": (
+            "Lagos Mainland & Ikeja: same-day dispatch, arrival within 3-5 hours after payment confirmation. "
+            "Lekki / Island: same-day or next morning (traffic dependent). "
+            "Abuja FCT and interstate waybill: 24-48 hours."
+        ),
+    },
+    {
+        "faq_key": "TRUST_PROOF",
+        "entry_type": "FAQ",
+        "intent": "TRUST_VERIFICATION_PROOF",
+        "title": "Is this business verified?",
+        "content": (
+            "We are a verified, RC-registered commodities depot with over 5,000 fulfilled deliveries. "
+            "Credentials and customer reviews: https://catalog.sme.ng/proof"
+        ),
+    },
+]
+
+LEKKI_GLOW_FAQS: List[Dict[str, Any]] = [
+    {
+        "faq_key": "TRUST_PROOF",
+        "entry_type": "FAQ",
+        "intent": "TRUST_VERIFICATION_PROOF",
+        "title": "Where are you located?",
+        "content": "Lekki Glow Wellness & Barber Hub is a licensed studio in Lekki Phase 1, Lagos. Walk-ins welcome Mon-Sat.",
+    },
+]
+
+HORIZON_TECH_FAQS: List[Dict[str, Any]] = [
+    {
+        "faq_key": "DELIVERY_TIMELINE_LAGOS",
+        "entry_type": "POLICY",
+        "intent": "DELIVERY_TIMELINE_INQUIRY",
+        "title": "Delivery timelines",
+        "content": "Lagos: same-day dispatch for orders confirmed before 3PM. Interstate: 2-3 business days via insured courier.",
+    },
+]

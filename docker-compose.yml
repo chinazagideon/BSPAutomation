@@ -14,6 +14,7 @@ services:
       - ./docs/schema/001_enterprise_schema.sql:/docker-entrypoint-initdb.d/001_enterprise_schema.sql:ro
       - ./docs/schema/002_centralized_knowledge_and_generation.sql:/docker-entrypoint-initdb.d/002_centralized_knowledge_and_generation.sql:ro
       - ./docs/schema/003_multi_channel_and_conversations_fk.sql:/docker-entrypoint-initdb.d/003_multi_channel_and_conversations_fk.sql:ro
+      - ./docs/schema/004_customer_orders_table.sql:/docker-entrypoint-initdb.d/004_customer_orders_table.sql:ro
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d bsp_whatsapp_enterprise"]
@@ -42,16 +43,16 @@ services:
     depends_on:
       - redis
 
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: bsp_jaeger
-    restart: unless-stopped
-    ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
+  # jaeger:
+  #   image: jaegertracing/all-in-one:latest
+  #   container_name: bsp_jaeger
+  #   restart: unless-stopped
+  #   ports:
+  #     - "16686:16686"
+  #     - "4317:4317"
+  #     - "4318:4318"
+  #   environment:
+  #     - COLLECTOR_OTLP_ENABLED=true
 
   api:
     build:
@@ -76,8 +77,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      jaeger:
-        condition: service_started
+      # jaeger:
+      #   condition: service_started
 
   worker:
     build:
@@ -100,8 +101,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      jaeger:
-        condition: service_started
+      # jaeger:
+      #   condition: service_started
 
 volumes:
   postgres_data:

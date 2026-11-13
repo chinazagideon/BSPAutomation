@@ -19,6 +19,8 @@ from app.adapters.base import (
     CommandTapAction,
     HydrationTranslationInput,
     InteractiveProtocolEnvelope,
+    NavAction,
+    OrderSelectAction,
     ParsedTurnInput,
     ProductTapAction,
     SlotBindAction,
@@ -33,6 +35,7 @@ from app.core.generation.negotiation import (
     NegotiationFrameManager,
 )
 from app.core.generation.response_classifier import ResponseStrategy
+from app.core.generation.order_ledger import CustomerOrderLedger
 from app.core.generation.response_formatter import (
     EgressMessageType,
     EgressPayloadEnvelope,
@@ -42,6 +45,9 @@ from app.core.generation.response_orchestrator import ResponseOrchestrator
 from app.core.generation.tools import ToolStatus, get_local_tool_dispatcher
 
 logger = structlog.get_logger(__name__)
+
+# Intents answerable only from merchant knowledge (never from fast-path or hardcoded templates).
+KNOWLEDGE_BOUND_INTENTS = frozenset({"DELIVERY_TIMELINE_INQUIRY", "ORDER_STATUS_INQUIRY", "TRUST_VERIFICATION_PROOF"})
 
 
 class FSMTransitionType(str, Enum):
@@ -54,6 +60,7 @@ class FSMTransitionType(str, Enum):
     AFFIRM_OFFER = "AFFIRM_OFFER"
     NEGATE_OFFER = "NEGATE_OFFER"
     NEW_FLOW = "NEW_FLOW"
+    INDEPENDENT_INQUIRY = "INDEPENDENT_INQUIRY"
 
 
 class FSMTurnOutcome(BaseModel):
@@ -201,6 +208,7 @@ class ConversationFSMService:
                         stack=stack,
                         active_frame=active_frame,
                         tool_res=tool_res,
+                        session=session,
                     )
 
             case CommandTapAction(command="SHOW_CATALOG"):
@@ -245,6 +253,92 @@ class ConversationFSMService:
                     to_phone=customer_phone,
                     text="A human agent will be with you shortly. Please hold on.",
                     strategy=ResponseStrategy.AGENT_HANDOFF,
+                )
+
+            case NavAction(target="RESUME_CART"):
+                active_frame = stack.peek()
+                if active_frame and active_frame.intent == "INSTANT_CHECKOUT_ORDER":
+                    tool_res = await get_local_tool_dispatcher().evaluate(
+                        intent="INSTANT_CHECKOUT_ORDER",
+                        slots=active_frame.bound_slots,
+                        catalog_manifest=catalog_manifest,
+                    )
+                    if tool_res:
+                        return await cls._format_tool_evaluation_envelope(
+                            merchant_id=m_id,
+                            customer_phone=customer_phone,
+                            merchant_name=merchant_name,
+                            stack=stack,
+                            active_frame=active_frame,
+                            tool_res=tool_res,
+                            session=session,
+                        )
+                offerings = await KnowledgeService.search_catalog_offerings(
+                    merchant_id=merchant_id,
+                    query="",
+                    session=session,
+                )
+                return ResponseFormatter.format_interactive_list(
+                    to_phone=customer_phone,
+                    offerings=offerings,
+                    query_title="Catalog",
+                )
+
+            case NavAction(target="BROWSE_CATALOG"):
+                offerings = await KnowledgeService.search_catalog_offerings(
+                    merchant_id=merchant_id,
+                    query="",
+                    session=session,
+                )
+                return ResponseFormatter.format_interactive_list(
+                    to_phone=customer_phone,
+                    offerings=offerings,
+                    query_title="Catalog",
+                )
+
+            case NavAction(target="TRACK_ORDER"):
+                inquiry_res = await CustomerOrderLedger.lookup_order_for_inquiry(
+                    merchant_id=m_id,
+                    customer_phone=customer_phone,
+                    session=session,
+                )
+                return ResponseFormatter.format_order_status_card(
+                    to_phone=customer_phone,
+                    order=inquiry_res.order,
+                    multiple_orders=inquiry_res.orders if inquiry_res.cardinality == "MULTIPLE" else None,
+                    merchant_name=merchant_name,
+                )
+
+            case NavAction(target="AGENT_HANDOFF"):
+                active_frame = stack.peek() or NegotiationFrame(
+                    merchant_id=m_id,
+                    active_tool="DeskService",
+                    intent="DISPATCH_AGENT_HANDOFF",
+                    node_type="HANDOFF",
+                    bound_slots={},
+                    missing_slots=[],
+                )
+                active_frame.intent = "DISPATCH_AGENT_HANDOFF"
+                active_frame.node_type = "HANDOFF"
+                stack.push(active_frame)
+                await NegotiationFrameManager.save_stack(m_id, customer_phone, stack)
+                return ResponseFormatter.format_standard_text(
+                    to_phone=customer_phone,
+                    text="A human agent will be with you shortly. Please hold on.",
+                    strategy=ResponseStrategy.AGENT_HANDOFF,
+                )
+
+            case OrderSelectAction(order_id=order_id):
+                inquiry_res = await CustomerOrderLedger.lookup_order_for_inquiry(
+                    merchant_id=m_id,
+                    customer_phone=customer_phone,
+                    order_ref=order_id,
+                    session=session,
+                )
+                return ResponseFormatter.format_order_status_card(
+                    to_phone=customer_phone,
+                    order=inquiry_res.order,
+                    merchant_name=merchant_name,
                 )
 
         return ResponseFormatter.format_interactive_buttons(
@@ -401,6 +495,28 @@ class ConversationFSMService:
             )
 
         # ---------------------------------------------------------------------
+        # 3b. Independent Knowledge-Bound Inquiry Lane (delivery timeline, trust/location)
+        #     Decoupled from the LIFO stack: never pushes, pops, or mutates frames, and is
+        #     answerable inside or outside a negotiation, about the current cart or an old order.
+        #     Only merchant-KB-grounded answers short-circuit here; ungrounded queries fall
+        #     through to Stage 2 / Stage 3 escalation below.
+        # ---------------------------------------------------------------------
+        if parsed.intent in KNOWLEDGE_BOUND_INTENTS and parsed.confidence >= 0.75:
+            inquiry_outcome = await cls._resolve_independent_inquiry(
+                merchant_id=m_id,
+                customer_phone=customer_phone,
+                session=session,
+                merchant_name=merchant_name,
+                catalog_manifest=catalog_manifest,
+                parsed=parsed,
+                active_frame=active_frame,
+                stack=stack,
+                start_time=start_time,
+            )
+            if inquiry_outcome is not None:
+                return inquiry_outcome
+
+        # ---------------------------------------------------------------------
         # 4. Transition Branch B: Active Frame Pending Offer Affirmation / Negation
         # ---------------------------------------------------------------------
         if active_frame and active_frame.pending_offer:
@@ -502,6 +618,7 @@ class ConversationFSMService:
                         stack=stack,
                         active_frame=active_frame,
                         tool_res=tool_res,
+                        session=session,
                     )
                     top = stack.peek()
                     latency = (time.perf_counter() - start_time) * 1000.0
@@ -570,6 +687,7 @@ class ConversationFSMService:
                     stack=stack,
                     active_frame=new_frame,
                     tool_res=tool_res,
+                    session=session,
                 )
                 top = stack.peek()
                 latency = (time.perf_counter() - start_time) * 1000.0
@@ -671,6 +789,166 @@ class ConversationFSMService:
     # -------------------------------------------------------------------------
     # INTERNAL FSM HELPERS
     # -------------------------------------------------------------------------
+    @classmethod
+    async def _resolve_independent_inquiry(
+        cls,
+        merchant_id: str,
+        customer_phone: str,
+        session: Optional[AsyncSession],
+        merchant_name: str,
+        catalog_manifest: Optional[str],
+        parsed: ParsedTurnInput,
+        active_frame: Optional[NegotiationFrame],
+        stack: ContextStack,
+        start_time: float,
+    ) -> Optional[FSMTurnOutcome]:
+        """
+        Answers a knowledge-bound FAQ strictly from the merchant knowledge base.
+
+        Returns None when the knowledge base holds no reference (ungrounded) so the caller
+        escalates to Stage 2/3 instead of fabricating an answer or opening an agent ticket.
+        The LIFO stack is never modified; an in-progress checkout is merely re-prompted.
+        """
+        try:
+            merchant_uuid = UUID(merchant_id)
+        except ValueError:
+            return None
+
+        # Dedicated post-purchase order status tracking lane (ADR-0048)
+        if parsed.intent == "ORDER_STATUS_INQUIRY":
+            inquiry_res = await CustomerOrderLedger.lookup_order_for_inquiry(
+                merchant_id=merchant_id,
+                customer_phone=customer_phone,
+                order_ref=parsed.slots.get("order_reference"),
+                session=session,
+            )
+            order_envelope = ResponseFormatter.format_order_status_card(
+                to_phone=customer_phone,
+                order=inquiry_res.order,
+                multiple_orders=inquiry_res.orders if inquiry_res.cardinality == "MULTIPLE" else None,
+                merchant_name=merchant_name,
+            )
+
+            if active_frame and active_frame.missing_slots:
+                tool_res = await get_local_tool_dispatcher().evaluate(
+                    intent=active_frame.intent,
+                    slots=active_frame.bound_slots,
+                    catalog_manifest=catalog_manifest,
+                )
+                if tool_res and tool_res.clarification:
+                    cart_desc = f"{active_frame.bound_slots.get('quantity', 1)}x {active_frame.bound_slots.get('product_name') or active_frame.bound_slots.get('product') or 'items'}"
+                    total_str = f" (₦{tool_res.calculated_total_kobo // 100:,})" if tool_res.calculated_total_kobo else ""
+                    resumption_prompt = f"🛒 Continuing your reservation for *{cart_desc}*{total_str}:\n{tool_res.clarification.prompt_text}"
+                    envelope = ResponseFormatter.format_compound_response(
+                        to_phone=customer_phone,
+                        answer_text=order_envelope.body_text,
+                        resumption_prompt=resumption_prompt,
+                        buttons=tool_res.clarification.buttons,
+                        strategy=ResponseStrategy.ORDER_STATUS_CARD,
+                    )
+                else:
+                    envelope = order_envelope
+            else:
+                envelope = order_envelope
+
+            top = stack.peek()
+            latency = (time.perf_counter() - start_time) * 1000.0
+            return FSMTurnOutcome(
+                transition=FSMTransitionType.INDEPENDENT_INQUIRY,
+                envelope=envelope,
+                intent="ORDER_STATUS_INQUIRY",
+                action="RESOLVE_ORDER_STATUS",
+                lead_tier="HOT",
+                urgency_score=8,
+                confidence=parsed.confidence,
+                detected_dialect=parsed.detected_dialect,
+                routing_source="ORDER_LEDGER",
+                extracted_entities=parsed.slots,
+                tokens_consumed=parsed.tokens_consumed,
+                latency_ms=round(latency, 2),
+                active_frame=top.model_dump(mode="json") if top else None,
+                context_stack=[f.model_dump(mode="json") for f in stack.frames],
+            )
+
+        if session is None:
+            return None
+
+        entries = await KnowledgeService.search_faq_entries(
+            session=session,
+            merchant_id=merchant_uuid,
+            intent=parsed.intent,
+        )
+        if not entries:
+            logger.info("independent_inquiry_ungrounded", merchant_id=merchant_id, intent=parsed.intent)
+            return None
+
+        kb_text = "\n".join(e.content.strip() for e in entries)
+        lead_in = ""
+        if parsed.intent == "DELIVERY_TIMELINE_INQUIRY":
+            mentioned_zone = parsed.slots.get("delivery_zone") or parsed.slots.get("location")
+            orders = await CustomerOrderLedger.list_recent(merchant_id, customer_phone, session=session)
+            if mentioned_zone:
+                lead_in = f"For delivery to {mentioned_zone}:\n"
+            elif orders:
+                latest = orders[0]
+                where = f" to {latest.delivery_zone}" if latest.delivery_zone else ""
+                lead_in = f"For your most recent order ({latest.order_summary}{where}):\n"
+                if len(orders) > 1:
+                    kb_text += "\n\n*(Note: You have multiple recent orders. If you are inquiring about an older order, please specify its item or location.)*"
+
+        reply = f"{lead_in}{kb_text}"
+        buttons = None
+
+        # If a checkout is mid-flight, format compound response to resume without dropping stack (ADR-0048)
+        if active_frame and active_frame.missing_slots:
+            tool_res = await get_local_tool_dispatcher().evaluate(
+                intent=active_frame.intent,
+                slots=active_frame.bound_slots,
+                catalog_manifest=catalog_manifest,
+            )
+            if tool_res and tool_res.clarification:
+                cart_desc = f"{active_frame.bound_slots.get('quantity', 1)}x {active_frame.bound_slots.get('product_name') or active_frame.bound_slots.get('product') or 'items'}"
+                total_str = f" (₦{tool_res.calculated_total_kobo // 100:,})" if tool_res.calculated_total_kobo else ""
+                resumption_prompt = f"🛒 Continuing your reservation for *{cart_desc}*{total_str}:\n{tool_res.clarification.prompt_text}"
+                envelope = ResponseFormatter.format_compound_response(
+                    to_phone=customer_phone,
+                    answer_text=reply,
+                    resumption_prompt=resumption_prompt,
+                    buttons=tool_res.clarification.buttons,
+                    strategy=ResponseStrategy.STANDARD_TEXT,
+                )
+            else:
+                envelope = ResponseFormatter.format_standard_text(
+                    to_phone=customer_phone,
+                    text=reply,
+                    strategy=ResponseStrategy.STANDARD_TEXT,
+                )
+        else:
+            envelope = ResponseFormatter.format_standard_text(
+                to_phone=customer_phone,
+                text=reply,
+                strategy=ResponseStrategy.STANDARD_TEXT,
+            )
+
+        top = stack.peek()
+        latency = (time.perf_counter() - start_time) * 1000.0
+        return FSMTurnOutcome(
+            transition=FSMTransitionType.INDEPENDENT_INQUIRY,
+            envelope=envelope,
+            intent=parsed.intent,
+            action="ANSWER_FROM_KNOWLEDGE_BASE",
+            lead_tier=parsed.lead_tier,
+            urgency_score=parsed.urgency_score,
+            confidence=parsed.confidence,
+            detected_dialect=parsed.detected_dialect,
+            routing_source="CUSTOM_LOCAL_MODEL",
+            extracted_entities=dict(parsed.slots),
+            tokens_consumed=parsed.tokens_consumed,
+            latency_ms=round(latency, 2),
+            active_frame=top.model_dump(mode="json") if top else None,
+            context_stack=[f.model_dump(mode="json") for f in stack.frames],
+        )
+
     @classmethod
     async def _execute_push_subflow_and_pop_resume(
         cls,
@@ -894,6 +1172,7 @@ class ConversationFSMService:
     def _provides_relevant_checkout_slot(active_frame: NegotiationFrame, parsed: ParsedTurnInput) -> bool:
         if parsed.intent in (
             "DELIVERY_TIMELINE_INQUIRY",
+            "ORDER_STATUS_INQUIRY",
             "TRUST_VERIFICATION_PROOF",
             "WHOLESALE_DISCOUNT_INQUIRY",
             "HUMAN_AGENT_HANDOFF",
@@ -1022,6 +1301,7 @@ class ConversationFSMService:
         stack: ContextStack,
         active_frame: NegotiationFrame,
         tool_res: Any,
+        session: Optional[AsyncSession] = None,
     ) -> EgressPayloadEnvelope:
         if tool_res.status == ToolStatus.NEEDS_CLARIFICATION:
             active_frame.missing_slots = tool_res.missing_slots
@@ -1051,6 +1331,14 @@ class ConversationFSMService:
             stack.pop()
             await NegotiationFrameManager.save_stack(merchant_id, customer_phone, stack)
             total_kobo = tool_res.calculated_total_kobo or 0
+            # Persist a stack-independent order pointer in PostgreSQL (ledger.customer_orders)
+            await CustomerOrderLedger.record_order(
+                merchant_id=merchant_id,
+                customer_phone=customer_phone,
+                bound_slots=active_frame.bound_slots,
+                total_kobo=total_kobo,
+                session=session,
+            )
             total_naira = f"₦{total_kobo // 100:,}"
             loc_str = (
                 f" for delivery to {tool_res.bound_slots.get('delivery_zone', 'your address')}"
@@ -1104,6 +1392,8 @@ class ConversationFSMService:
             ResponseStrategy.CATALOG_PRODUCT_LIST: "DISPLAY_CATALOG_LIST",
             ResponseStrategy.AGENT_HANDOFF: "AGENT_HANDOFF",
             ResponseStrategy.SLOT_CLARIFICATION: "DISPATCH_CLARIFICATION",
+            ResponseStrategy.ORDER_STATUS_CARD: "RESOLVE_ORDER_STATUS",
+            ResponseStrategy.UNRESOLVED_DISAMBIGUATION: "SHOW_DISAMBIGUATION_MENU",
         }
         return mapping.get(strategy, "DISPATCH_CLARIFICATION")
 

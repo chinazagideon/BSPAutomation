@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # Stage 2: Custom Local Classifier (HuggingFace / ONNX / spaCy)
     USE_CUSTOM_MODEL: bool = True
-    CUSTOM_MODEL_TYPE: Literal["mock", "onnx", "transformers", "spacy"] = "spacy"
+    CUSTOM_MODEL_TYPE: Literal["mock", "onnx", "transformers", "spacy", "open_weight"] = "open_weight"
     CUSTOM_MODEL_PATH: str = "models/nigerian_pidgin_intent"
     SPACY_MODEL_PATH: str = "models/spacy_nigerian_sme"
     CUSTOM_MODEL_CONFIDENCE_THRESHOLD: float = 0.75

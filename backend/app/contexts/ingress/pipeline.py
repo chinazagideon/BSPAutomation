@@ -31,6 +31,10 @@ class CascadingNLUPipeline:
         catalog_manifest: Optional[str] = None,
         provider_context: Optional[dict] = None,
         policy: Optional[ExecutionPolicy] = None,
+        faq_manifest: Optional[str] = None,
+        customer_orders_manifest: Optional[str] = None,
+        faq_data: Optional[List[Dict[str, Any]]] = None,
+        customer_orders_data: Optional[List[Dict[str, Any]]] = None,
     ) -> NLUClassificationResponse:
         engine = get_inference_engine()
 
@@ -41,6 +45,20 @@ class CascadingNLUPipeline:
                 slice_name="catalog_manifest",
                 content=catalog_manifest,
                 token_estimate=len(catalog_manifest.split()) * 2,
+            )
+        if faq_manifest:
+            slices["faq_manifest"] = ContextSlice(
+                slice_name="faq_manifest",
+                content=faq_manifest,
+                structured_data={"faqs": faq_data or []},
+                token_estimate=len(faq_manifest.split()) * 2,
+            )
+        if customer_orders_manifest:
+            slices["customer_orders"] = ContextSlice(
+                slice_name="customer_orders",
+                content=customer_orders_manifest,
+                structured_data={"orders": customer_orders_data or []},
+                token_estimate=len(customer_orders_manifest.split()) * 2,
             )
         if provider_context:
             waba_name = provider_context.get("verified_business_name", merchant_name)

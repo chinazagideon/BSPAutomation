@@ -302,6 +302,42 @@ class KnowledgeService:
         return list(res.scalars().all())
 
     @staticmethod
+    async def search_faq_entries(
+        session: AsyncSession,
+        merchant_id: Optional[UUID],
+        intent: str,
+        limit: int = 3,
+    ) -> List[KnowledgeEntry]:
+        """
+        Retrieves merchant-grounded FAQ / POLICY entries tagged with a canonical intent.
+
+        Returns an empty list when the merchant knowledge base holds no reference for the
+        intent, which callers MUST treat as "ungrounded" (escalate; never fabricate).
+        Tenant isolation: merchant-owned rows plus global (NULL merchant) rows only.
+        """
+        conditions = [
+            KnowledgeEntry.is_active.is_(True),
+            KnowledgeEntry.entry_type.in_(["FAQ", "POLICY"]),
+            KnowledgeEntry.metadata_json.op("->>")("intent") == intent,
+        ]
+        if merchant_id:
+            conditions.append(
+                or_(KnowledgeEntry.merchant_id == merchant_id, KnowledgeEntry.merchant_id.is_(None))
+            )
+        else:
+            conditions.append(KnowledgeEntry.merchant_id.is_(None))
+
+        # Merchant-specific entries outrank global ones.
+        stmt = (
+            select(KnowledgeEntry)
+            .where(*conditions)
+            .order_by(KnowledgeEntry.merchant_id.is_(None), desc(KnowledgeEntry.updated_at))
+            .limit(limit)
+        )
+        res = await session.execute(stmt)
+        return list(res.scalars().all())
+
+    @staticmethod
     async def compile_manifest(
         session: AsyncSession,
         merchant_id: UUID,

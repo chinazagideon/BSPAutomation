@@ -22,9 +22,64 @@ from app.contexts.ingress.fast_path import fast_path_classify, extract_commercia
 from app.contexts.ingress.templates import synthesize_custom_model_reply
 from app.adapters.custom_classifier import get_custom_classifier_adapter
 from app.adapters.llm import get_llm_provider_adapter
+from app.adapters.providers.spacy_nlu_engine import get_spacy_nlu_engine
 
 logger = structlog.get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
+
+HELP_MENU_REPLY = (
+    "Thanks for reaching out! I can help with prices and stock, placing an order, delivery timelines, "
+    "payment details, or our shop info. Tell me which one you need, or ask for an agent if you'd rather "
+    "speak with a person."
+)
+
+_HANDOFF_ACTIONS = ("DISPATCH_AGENT_HANDOFF", "AGENT_HANDOFF")
+
+
+def is_explicit_human_request(text: str) -> bool:
+    """True only when the customer explicitly asks for a person (classified by spaCy, not keywords)."""
+    try:
+        return get_spacy_nlu_engine().predict_intent_and_slots(text).intent == "HUMAN_AGENT_HANDOFF"
+    except Exception:
+        return False
+
+
+def _unresolved_result(
+    text: str,
+    latency_ms: float,
+    routing_source: str,
+    intent: str = "UNRESOLVED_GENERAL_QUERY",
+    confidence: float = 0.50,
+) -> ClassificationResult:
+    """
+    Last-resort result for queries the pipeline could not resolve. Agent handoff is reserved for
+    explicit human requests; everything else gets a help menu and stays automated.
+    """
+    if is_explicit_human_request(text):
+        return ClassificationResult(
+            intent="HUMAN_AGENT_HANDOFF",
+            lead_tier="WARM",
+            urgency_score=8,
+            confidence=max(confidence, 0.9),
+            detected_dialect="Nigerian Commercial Slang",
+            suggested_reply="No wahala! I am transferring you to our support desk now.",
+            action="DISPATCH_AGENT_HANDOFF",
+            extracted_entities=extract_commercial_entities(text),
+            routing_source=routing_source,
+            latency_ms=round(latency_ms, 2),
+        )
+    return ClassificationResult(
+        intent=intent,
+        lead_tier="WARM",
+        urgency_score=5,
+        confidence=confidence,
+        detected_dialect="Nigerian Commercial Slang",
+        suggested_reply=HELP_MENU_REPLY,
+        action="SHOW_HELP_MENU",
+        extracted_entities=extract_commercial_entities(text),
+        routing_source=routing_source,
+        latency_ms=round(latency_ms, 2),
+    )
 
 
 class CentralInferenceEngine(InferenceEnginePort):
@@ -200,7 +255,15 @@ class CentralInferenceEngine(InferenceEnginePort):
             if custom_res.extracted_entities:
                 extracted_entities.update(custom_res.extracted_entities)
 
-            is_custom_hit = custom_res.confidence >= settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD or policy == ExecutionPolicy.LOCAL_MODEL
+            # Knowledge-bound FAQs (delivery / trust) can only be answered from the merchant knowledge
+            # base. Stage 2 classifies them, but cannot ground them here, so it never finalizes them:
+            # grounded cases are resolved upstream (FSM independent inquiry lane); anything reaching
+            # this point is ungrounded and must escalate to Stage 3 rather than use a template.
+            is_knowledge_bound = custom_res.action == "RESOLVE_FROM_KNOWLEDGE_BASE"
+            is_custom_hit = (
+                custom_res.confidence >= settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD
+                or policy == ExecutionPolicy.LOCAL_MODEL
+            ) and not is_knowledge_bound
             logger.info(
                 "stage_2_custom_model_evaluated",
                 model_type=settings.CUSTOM_MODEL_TYPE,
@@ -208,6 +271,7 @@ class CentralInferenceEngine(InferenceEnginePort):
                 confidence=custom_res.confidence,
                 threshold=settings.CUSTOM_MODEL_CONFIDENCE_THRESHOLD,
                 matched=is_custom_hit,
+                knowledge_bound=is_knowledge_bound,
                 latency_ms=round(custom_res.latency_ms, 2),
                 text=text,
             )
@@ -260,20 +324,14 @@ class CentralInferenceEngine(InferenceEnginePort):
                     task_priority=task_priority.value,
                     balance=wallet_token_balance,
                 )
-                # Degrade to deterministic fallback
+                # Degrade to deterministic fallback (handoff only on explicit human request)
                 latency = (time.perf_counter() - start_time) * 1000.0
-                return ClassificationResult(
-                    intent="WALLET_THROTTLED_FALLBACK",
-                    lead_tier="WARM",
-                    urgency_score=6,
-                    confidence=0.70,
-                    detected_dialect="Nigerian Commercial Slang",
-                    suggested_reply="Thank you for your message! Our team is processing your inquiry.",
-                    action="DISPATCH_AGENT_HANDOFF",
-                    extracted_entities=extract_commercial_entities(text),
+                return _unresolved_result(
+                    text=text,
+                    latency_ms=latency,
                     routing_source="FALLBACK_DESK_HANDOFF",
-                    latency_ms=round(latency, 2),
-                    tokens_consumed=0,
+                    intent="WALLET_THROTTLED_FALLBACK",
+                    confidence=0.70,
                 )
 
             # Two-Phase Reservation
@@ -291,7 +349,8 @@ class CentralInferenceEngine(InferenceEnginePort):
                     "- INSTANT_CHECKOUT_ORDER (intent to buy or place an immediate order)\n"
                     "- PRICE_INQUIRY (asking for product pricing, rate card, or catalog)\n"
                     "- WHOLESALE_DISCOUNT_INQUIRY (negotiating bulk discounts or wholesale tier)\n"
-                    "- DELIVERY_TIMELINE_INQUIRY (asking dispatch arrival time, riders, waybill)\n"
+                    "- ORDER_STATUS_INQUIRY (asking for status or ETA of an existing placed order, dispatch tracking, rider update)\n"
+                    "- DELIVERY_TIMELINE_INQUIRY (asking pre-purchase delivery coverage, dispatch SLA, waybill terms)\n"
                     "- RESERVE_APPOINTMENT (booking or scheduling calendar slots)\n"
                     "- CONFIRM_PAYMENT (claiming payment transfer was made)\n"
                     "- TRUST_VERIFICATION_PROOF (asking if legit, past reviews, shop location)\n"
@@ -302,7 +361,11 @@ class CentralInferenceEngine(InferenceEnginePort):
                     "- lead_tier MUST be 'HOT', 'WARM', or 'COLD'.\n"
                     "- urgency_score MUST be an integer from 1 to 10.\n"
                     "- detected_dialect MUST be 'Nigerian Pidgin', 'Commercial Slang', or 'Standard English'.\n"
-                    "- suggested_reply must be professional, warm, culturally attuned Nigerian commercial English or Pidgin."
+                    "- suggested_reply must be professional, warm, culturally attuned Nigerian commercial English or Pidgin.\n"
+                    "- Answer ONLY from the merchant manifests provided below. NEVER invent delivery times, prices, "
+                    "policies, or business facts. If the answer is not in the manifests, say what you can help with "
+                    "and ask a clarifying question instead.\n"
+                    "- Use HUMAN_AGENT_HANDOFF ONLY when the customer explicitly asks for a human or agent."
                 )
 
                 # Decouple context: persistent manifests in system_instruction, turns in prompt (ADR-0044 Q10)
@@ -348,6 +411,24 @@ class CentralInferenceEngine(InferenceEnginePort):
                     tokens_consumed=llm_res.tokens_consumed or 380,
                 )
 
+                if llm_res.action in _HANDOFF_ACTIONS or llm_res.intent == "HUMAN_AGENT_HANDOFF":
+                    explicit_human = is_explicit_human_request(text)
+                    is_error_fallback = bool((llm_res.extracted_entities or {}).get("error_fallback"))
+                    if not explicit_human or is_error_fallback:
+                        logger.info(
+                            "stage_3_handoff_resolved_by_policy_gate",
+                            llm_intent=llm_res.intent,
+                            explicit_human=explicit_human,
+                            reason=(llm_res.extracted_entities or {}).get("reason"),
+                        )
+                        return _unresolved_result(
+                            text=text,
+                            latency_ms=latency,
+                            routing_source="GEMINI_LLM_ESCALATION",
+                            intent="GENERAL_INQUIRY",
+                            confidence=llm_res.confidence,
+                        )
+
                 return ClassificationResult(
                     intent=llm_res.intent,
                     lead_tier=llm_res.lead_tier,
@@ -375,17 +456,10 @@ class CentralInferenceEngine(InferenceEnginePort):
             latency_ms=round(latency, 2),
             tokens_consumed=0,
         )
-        return ClassificationResult(
-            intent="UNRESOLVED_GENERAL_QUERY",
-            lead_tier="WARM",
-            urgency_score=5,
-            confidence=0.50,
-            detected_dialect="Nigerian Commercial Slang",
-            suggested_reply="Thank you! Our support desk has received your message.",
-            action="DISPATCH_AGENT_HANDOFF",
-            extracted_entities=extract_commercial_entities(text),
+        return _unresolved_result(
+            text=text,
+            latency_ms=latency,
             routing_source="FALLBACK_DESK_HANDOFF",
-            latency_ms=round(latency, 2),
         )
 
     async def generate_text(

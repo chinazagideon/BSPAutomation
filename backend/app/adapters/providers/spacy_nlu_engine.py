@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import structlog
 
 from app.adapters.base import CartLineItem, ClassificationOutput, ParsedTurnInput
-from app.contexts.knowledge.offering_schemas import compute_offering_id
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -94,11 +93,13 @@ STAGE_1_FAST_PATH_INTENTS: Set[str] = {
     "RESERVE_APPOINTMENT",
     "HUMAN_AGENT_HANDOFF",
     "GREETING_ENGAGEMENT",
+    "ORDER_STATUS_INQUIRY",
 }
 
 STAGE_2_CUSTOM_MODEL_INTENTS: Set[str] = {
     "WHOLESALE_DISCOUNT_INQUIRY",
     "DELIVERY_TIMELINE_INQUIRY",
+    "ORDER_STATUS_INQUIRY",
     "TRUST_VERIFICATION_PROOF",
     "REQUEST_PAYMENT_DETAILS",
 }
@@ -255,6 +256,7 @@ class SpacyNLUEngine:
                     prod_name, category, unit_kobo = SKU_METADATA_REGISTRY.get(
                         sku_code, (ent.text.title(), "general", 0)
                     )
+                    from app.contexts.knowledge.offering_schemas import compute_offering_id
                     offering_id = compute_offering_id(merchant_id, sku_code)
                     product_spans.append({
                         "start_char": ent.start_char,
@@ -336,6 +338,16 @@ class SpacyNLUEngine:
                     entities["budget_kobo"] = int(num * 100)
             except ValueError:
                 pass
+
+        # 3b. Order Reference Extraction (e.g. "#A849", "order 8491", "order #1234", "ref #9021")
+        order_ref_match = re.search(r"(?:order|ref|receipt)?\s*#([a-zA-Z0-9\-]{3,36})\b", lower)
+        if not order_ref_match:
+            order_ref_match = re.search(
+                r"\b(?:order|ref|receipt)\s*(?:no\.?|num\.?|number|id)?\s*[:\s#]?\s*([a-zA-Z0-9\-]*\d+[a-zA-Z0-9\-]*)\b",
+                lower,
+            )
+        if order_ref_match:
+            entities["order_reference"] = order_ref_match.group(1).strip()
 
         # 4. Deduplicate overlapping & repeated product spans (prefer specific SKU over generic category)
         deduped_products = self._deduplicate_product_spans(product_spans, active_bound_slots, has_mutation_marker)
@@ -526,6 +538,7 @@ class SpacyNLUEngine:
                 if SpacyNLUEngine._overlaps_rejected(m.start(), m.end(), rejected_ranges):
                     continue
                 prod_name, category, unit_kobo = SKU_METADATA_REGISTRY[sku_code]
+                from app.contexts.knowledge.offering_schemas import compute_offering_id
                 product_spans.append({
                     "start_char": m.start(),
                     "end_char": m.end(),
@@ -742,9 +755,9 @@ class SpacyNLUEngine:
 
         # Sub-flow & specialized intents with clear lexical + textcat alignment
         if re.search(
-            r"(?:when\s*e\s*go\s*land|how\s*long.*(?:deliver|take|reach)|delivery\s*timeline|dispatch\s*rider|interstate\s*waybill|how\s*many\s*(?:days|hours)|when\s*rider\s*go)",
+            r"(?:how\s*long.*(?:deliver|take|reach)|delivery\s*timeline|dispatch\s*rider|interstate\s*waybill|how\s*many\s*(?:days|hours)|when\s*rider\s*go)",
             lower,
-        ):
+        ) and not re.search(r"\b(?:my\s*order|my\s*delivery|track|order\s*status)\b", lower):
             return ("DELIVERY_TIMELINE_INQUIRY", max(0.92, spacy_conf), "WARM", 7)
 
         if re.search(
@@ -785,6 +798,25 @@ class SpacyNLUEngine:
             lower,
         ) and not re.search(r"\b(?:send\s*account\s*details|how\s*i\s*go\s*pay)\b", lower):
             return ("REQUEST_PAYMENT_DETAILS", max(0.94, spacy_conf), "HOT", 9)
+
+        # Post-purchase order status tracking inquiry (ADR-0048)
+        if re.search(
+            r"(?:"
+            r"when\s*(?:is|will)?\s*(?:my|the)?\s*(?:order|delivery|package|dispatch)\s*(?:going\s*to\s*)?arrive|"
+            r"where\s*(?:is|dey)?\s*(?:my|the)?\s*(?:order|delivery|package|dispatch)|"
+            r"where\s+my\s+delivery\s+dey|"
+            r"track\s*(?:my\s*)?order|"
+            r"order\s*status|"
+            r"dispatch\s*status|"
+            r"rider\s*(?:where|eta|status)|"
+            r"wetin\s*happen\s*to\s*my\s*order|"
+            r"my\s*order\s*never\s*reach|"
+            r"when\s*(?:e|am|it)\s*(?:go\s*land|reach)|"
+            r"waybill\s*status"
+            r")",
+            lower,
+        ) or (entities.get("order_reference") and re.search(r"\b(?:order|track|status|where|arrive|dispatch)\b", lower)):
+            return ("ORDER_STATUS_INQUIRY", max(0.95, spacy_conf), "HOT", 8)
 
         # Explicit Checkout / Order / Mid-Flow Slot Mutation / Multi-Item Cart
         has_line_items = bool(entities.get("line_items"))

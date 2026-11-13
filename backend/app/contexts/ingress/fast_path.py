@@ -87,6 +87,14 @@ _STAGE_1_INTENT_METADATA: Dict[str, Dict[str, Any]] = {
             "How we fit help your business today?"
         ),
     },
+    "ORDER_STATUS_INQUIRY": {
+        "rule_source": "order_status_inquiry",
+        "lead_tier": "HOT",
+        "urgency_score": 8,
+        "confidence": 0.95,
+        "action": "RESOLVE_ORDER_STATUS",
+        "suggested_reply": None,
+    },
 }
 
 

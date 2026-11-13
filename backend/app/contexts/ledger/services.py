@@ -51,6 +51,18 @@ class LedgerService:
             )
             session.add(item)
 
+        # Persist order pointer into ledger.customer_orders
+        from app.core.generation.order_ledger import CustomerOrderLedger
+        items_summary = " + ".join(f"{it.quantity}x {it.item_title}" for it in request.items) if request.items else "cart items"
+        await CustomerOrderLedger.record_order(
+            merchant_id=str(merchant_id),
+            customer_phone=request.customer_phone,
+            bound_slots={"product_name": items_summary, "quantity": sum(it.quantity for it in request.items)},
+            total_kobo=total_kobo,
+            cart_id=str(cart.id),
+            session=session,
+        )
+
         # Generate Dedicated Virtual NUBAN via Adapter
         payment_adapter = get_payment_gateway_adapter()
         nuban_data = await payment_adapter.generate_virtual_nuban(
